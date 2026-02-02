@@ -7,7 +7,7 @@ import {
   useWaitForTransactionReceipt,
   useReadContract,
 } from "wagmi";
-import { parseEther, type Address } from "viem";
+import { parseEther } from "viem";
 import {
   ADDRESSES,
   PROTECTED_POOL_KEY,
@@ -21,18 +21,20 @@ export function SwapPanel() {
   const [amount, setAmount] = useState("0.01");
   const [direction, setDirection] = useState<"buy" | "sell">("sell");
 
-  const { writeContract, data: txHash, isPending, error } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess } = useWaitForTransactionReceipt({
-    hash: txHash,
-  });
+  const approve = useWriteContract();
+  const permit2 = useWriteContract();
+  const swap = useWriteContract();
 
-  // Check WETH balance
+  const { isLoading: isSwapConfirming, isSuccess: isSwapSuccess } =
+    useWaitForTransactionReceipt({ hash: swap.data });
+
+  // Check balances
   const { data: wethBalance } = useReadContract({
     address: ADDRESSES.weth,
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [address!],
-    query: { enabled: !!address },
+    query: { enabled: !!address, refetchInterval: 10000 },
   });
 
   const { data: newtokenBalance } = useReadContract({
@@ -40,7 +42,7 @@ export function SwapPanel() {
     abi: erc20Abi,
     functionName: "balanceOf",
     args: [address!],
-    query: { enabled: !!address },
+    query: { enabled: !!address, refetchInterval: 10000 },
   });
 
   const zeroForOne = direction === "sell";
@@ -51,7 +53,7 @@ export function SwapPanel() {
 
   function handleApprove() {
     const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
-    writeContract({
+    approve.writeContract({
       address: token,
       abi: erc20Abi,
       functionName: "approve",
@@ -61,15 +63,15 @@ export function SwapPanel() {
 
   function handlePermit2Approve() {
     const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
-    writeContract({
+    permit2.writeContract({
       address: ADDRESSES.permit2,
       abi: permit2Abi,
       functionName: "approve",
       args: [
         token,
         ADDRESSES.swapRouter,
-        BigInt("1461501637330902918203684832716283019655932542975"), // type(uint160).max
-        281474976710655, // type(uint48).max
+        BigInt("1461501637330902918203684832716283019655932542975"),
+        281474976710655,
       ],
     });
   }
@@ -79,7 +81,7 @@ export function SwapPanel() {
     const amountIn = parseEther(amount);
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
-    writeContract({
+    swap.writeContract({
       address: ADDRESSES.swapRouter,
       abi: swapRouterAbi,
       functionName: "swapExactTokensForTokens",
@@ -114,9 +116,7 @@ export function SwapPanel() {
 
   return (
     <div className="rounded-xl border border-gray-700 p-6">
-      <h2 className="text-lg font-semibold mb-4">
-        Swap on Protected Pool
-      </h2>
+      <h2 className="text-lg font-semibold mb-4">Swap on Protected Pool</h2>
 
       <div className="space-y-4">
         {/* Direction */}
@@ -175,9 +175,7 @@ export function SwapPanel() {
 
         {/* Fee tier hint */}
         <div className="text-xs bg-gray-800/50 rounded p-2">
-          <p className="text-gray-400">
-            Expected fee tier based on amount:
-          </p>
+          <p className="text-gray-400">Expected fee tier based on amount:</p>
           <p className="font-mono text-yellow-400">
             {Number(amount) < 0.1
               ? "Base (0.30%)"
@@ -191,39 +189,51 @@ export function SwapPanel() {
         <div className="flex gap-2">
           <button
             onClick={handleApprove}
-            disabled={isPending}
+            disabled={approve.isPending}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
           >
-            1. Approve
+            {approve.isPending ? "..." : approve.isSuccess ? "1. Approved" : "1. Approve"}
           </button>
           <button
             onClick={handlePermit2Approve}
-            disabled={isPending}
+            disabled={permit2.isPending}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
           >
-            2. Permit2
+            {permit2.isPending ? "..." : permit2.isSuccess ? "2. Done" : "2. Permit2"}
           </button>
           <button
             onClick={handleSwap}
-            disabled={isPending}
+            disabled={swap.isPending}
             className="flex-1 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded text-sm font-semibold disabled:opacity-50"
           >
-            {isPending ? "Confirming..." : `3. Swap ${inputToken} -> ${outputToken}`}
+            {swap.isPending
+              ? "Confirming..."
+              : `3. Swap ${inputToken} -> ${outputToken}`}
           </button>
         </div>
 
         {/* Status */}
-        {isConfirming && (
+        {isSwapConfirming && (
           <p className="text-sm text-yellow-400">Waiting for confirmation...</p>
         )}
-        {isSuccess && (
+        {isSwapSuccess && (
           <p className="text-sm text-green-400">Swap confirmed!</p>
         )}
-        {error && (
+        {swap.error && (
           <p className="text-sm text-red-400 break-all">
-            {error.message.includes("CircuitBreakerTriggered")
+            {swap.error.message.includes("CircuitBreakerTriggered")
               ? "Circuit breaker triggered - swap too large!"
-              : error.message.slice(0, 200)}
+              : swap.error.message.slice(0, 200)}
+          </p>
+        )}
+        {approve.error && (
+          <p className="text-sm text-red-400 break-all">
+            Approve failed: {approve.error.message.slice(0, 150)}
+          </p>
+        )}
+        {permit2.error && (
+          <p className="text-sm text-red-400 break-all">
+            Permit2 failed: {permit2.error.message.slice(0, 150)}
           </p>
         )}
       </div>

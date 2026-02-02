@@ -1,67 +1,103 @@
 "use client";
 
-import { useWatchContractEvent } from "wagmi";
-import { useState } from "react";
-import { ADDRESSES, hookAbi, PROTECTED_POOL_ID } from "@/lib/contracts";
+import { useEffect, useState } from "react";
+import { usePublicClient } from "wagmi";
+import { parseAbiItem } from "viem";
+import { ADDRESSES, PROTECTED_POOL_ID } from "@/lib/contracts";
 import { bpsToPercent, feeToPercent } from "@/lib/utils";
 
 interface LogEntry {
-  id: number;
+  id: string;
   type: "fee" | "breaker";
   fee?: number;
   impactBps: bigint;
-  timestamp: Date;
+  txHash: string;
+  blockNumber: bigint;
 }
+
+const feeEvent = parseAbiItem(
+  "event DynamicFeeApplied(bytes32 indexed poolId, uint24 fee, uint256 impactBps)"
+);
+const breakerEvent = parseAbiItem(
+  "event CircuitBreakerHit(bytes32 indexed poolId, uint256 impactBps, uint256 refPriceChangeBps)"
+);
 
 export function EventLog() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
-  let nextId = 0;
+  const client = usePublicClient();
 
-  useWatchContractEvent({
-    address: ADDRESSES.hook,
-    abi: hookAbi,
-    eventName: "DynamicFeeApplied",
-    onLogs(eventLogs) {
-      const newEntries = eventLogs
-        .filter((log) => log.args.poolId === PROTECTED_POOL_ID)
-        .map((log) => ({
-          id: nextId++,
-          type: "fee" as const,
-          fee: Number(log.args.fee ?? 0),
-          impactBps: log.args.impactBps ?? 0n,
-          timestamp: new Date(),
-        }));
-      if (newEntries.length > 0) {
-        setLogs((prev) => [...newEntries, ...prev].slice(0, 50));
-      }
-    },
-  });
+  useEffect(() => {
+    if (!client) return;
 
-  useWatchContractEvent({
-    address: ADDRESSES.hook,
-    abi: hookAbi,
-    eventName: "CircuitBreakerHit",
-    onLogs(eventLogs) {
-      const newEntries = eventLogs
-        .filter((log) => log.args.poolId === PROTECTED_POOL_ID)
-        .map((log) => ({
-          id: nextId++,
-          type: "breaker" as const,
-          impactBps: log.args.impactBps ?? 0n,
-          timestamp: new Date(),
-        }));
-      if (newEntries.length > 0) {
-        setLogs((prev) => [...newEntries, ...prev].slice(0, 50));
+    let cancelled = false;
+
+    async function fetchLogs() {
+      if (!client || cancelled) return;
+
+      try {
+        const currentBlock = await client.getBlockNumber();
+        // Look back ~1000 blocks
+        const fromBlock = currentBlock > 1000n ? currentBlock - 1000n : 0n;
+
+        const [feeLogs, breakerLogs] = await Promise.all([
+          client.getLogs({
+            address: ADDRESSES.hook,
+            event: feeEvent,
+            args: { poolId: PROTECTED_POOL_ID },
+            fromBlock,
+            toBlock: currentBlock,
+          }),
+          client.getLogs({
+            address: ADDRESSES.hook,
+            event: breakerEvent,
+            args: { poolId: PROTECTED_POOL_ID },
+            fromBlock,
+            toBlock: currentBlock,
+          }),
+        ]);
+
+        if (cancelled) return;
+
+        const entries: LogEntry[] = [
+          ...feeLogs.map((log) => ({
+            id: `${log.transactionHash}-${log.logIndex}`,
+            type: "fee" as const,
+            fee: Number(log.args.fee ?? 0),
+            impactBps: log.args.impactBps ?? 0n,
+            txHash: log.transactionHash,
+            blockNumber: log.blockNumber,
+          })),
+          ...breakerLogs.map((log) => ({
+            id: `${log.transactionHash}-${log.logIndex}`,
+            type: "breaker" as const,
+            impactBps: log.args.impactBps ?? 0n,
+            txHash: log.transactionHash,
+            blockNumber: log.blockNumber,
+          })),
+        ];
+
+        entries.sort((a, b) => Number(b.blockNumber - a.blockNumber));
+        setLogs(entries.slice(0, 50));
+      } catch {
+        // RPC may not support large ranges; silently ignore
       }
-    },
-  });
+    }
+
+    fetchLogs();
+    const interval = setInterval(fetchLogs, 15000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [client]);
 
   return (
     <div className="rounded-xl border border-gray-700 p-6">
       <h2 className="text-lg font-semibold mb-4">Hook Events</h2>
       {logs.length === 0 ? (
         <p className="text-gray-500 text-sm">
-          Watching for DynamicFeeApplied and CircuitBreakerHit events...
+          No recent events. Swap on the protected pool to generate events.
         </p>
       ) : (
         <div className="space-y-2 max-h-64 overflow-y-auto">
@@ -76,7 +112,7 @@ export function EventLog() {
             >
               {log.type === "fee" ? (
                 <span>
-                  Fee applied:{" "}
+                  Fee:{" "}
                   <span className="font-mono text-yellow-400">
                     {feeToPercent(log.fee!)}
                   </span>{" "}
@@ -93,9 +129,14 @@ export function EventLog() {
                   </span>
                 </span>
               )}
-              <span className="text-gray-500 ml-2 text-xs">
-                {log.timestamp.toLocaleTimeString()}
-              </span>
+              <a
+                href={`https://sepolia.etherscan.io/tx/${log.txHash}`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-gray-500 ml-2 text-xs hover:text-gray-300"
+              >
+                block {log.blockNumber.toString()}
+              </a>
             </div>
           ))}
         </div>
