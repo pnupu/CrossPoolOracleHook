@@ -68,6 +68,51 @@ export function shortenAddress(addr: string): string {
   return addr.slice(0, 6) + "..." + addr.slice(-4);
 }
 
+/** Compute the storage slot for a pool's liquidity in PoolManager (slot0 + 1) */
+export function getLiquidityStorageSlot(poolId: Hex): Hex {
+  const slot0 = getSlot0StorageSlot(poolId);
+  const slot0Num = BigInt(slot0);
+  return ("0x" + (slot0Num + 1n).toString(16).padStart(64, "0")) as Hex;
+}
+
+/** Estimate swap price impact in bps using sqrtPrice-based AMM math.
+ *  Matches the Solidity _estimateSwapImpactBps logic. */
+export function estimateSwapImpactBps(
+  amountIn: bigint,
+  liquidity: bigint,
+  sqrtPriceX96: bigint,
+  zeroForOne: boolean
+): number {
+  if (liquidity === 0n || sqrtPriceX96 === 0n || amountIn === 0n) return 0;
+
+  const L = liquidity;
+  const sqrtP = sqrtPriceX96;
+  let newSqrtP: bigint;
+
+  if (zeroForOne) {
+    if (amountIn >= L) return 10000;
+    newSqrtP = (sqrtP * L) / (L + amountIn);
+  } else {
+    const delta = (amountIn << 96n) / L;
+    newSqrtP = sqrtP + delta;
+  }
+
+  const diff = newSqrtP > sqrtP ? newSqrtP - sqrtP : sqrtP - newSqrtP;
+  const impactBps = Number((2n * diff * 10000n) / sqrtP);
+  return Math.min(impactBps, 10000);
+}
+
+/** Predict the fee tier based on estimated impact and hook config thresholds */
+export function predictFeeTier(
+  impactBps: number,
+  highImpactThresholdBps: number,
+  circuitBreakerBps: number
+): "base" | "elevated" | "blocked" {
+  if (impactBps >= circuitBreakerBps) return "blocked";
+  if (impactBps >= highImpactThresholdBps) return "elevated";
+  return "base";
+}
+
 /** Calculate price change in bps between two sqrtPrices */
 export function priceChangeBps(
   oldSqrtPrice: bigint,

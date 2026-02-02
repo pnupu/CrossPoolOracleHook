@@ -12,19 +12,29 @@ import { parseEther } from "viem";
 import {
   ADDRESSES,
   PROTECTED_POOL_KEY,
+  PROTECTED_POOL_ID,
   erc20Abi,
   permit2Abi,
   swapRouterAbi,
+  poolManagerAbi,
+  hookAbi,
 } from "@/lib/contracts";
+import {
+  getSlot0StorageSlot,
+  getLiquidityStorageSlot,
+  parseSlot0,
+  estimateSwapImpactBps,
+  predictFeeTier,
+  bpsToPercent,
+} from "@/lib/utils";
 
 export function SwapPanel() {
   const { address, isConnected } = useAccount();
   const [amount, setAmount] = useState("0.01");
   const [direction, setDirection] = useState<"buy" | "sell">("sell");
   const [simStatus, setSimStatus] = useState<
-    "idle" | "ok" | "circuit-breaker" | "error"
+    "idle" | "ok" | "circuit-breaker"
   >("idle");
-  const [simError, setSimError] = useState("");
 
   const client = usePublicClient();
   const approveErc20 = useWriteContract();
@@ -46,7 +56,7 @@ export function SwapPanel() {
   const outputToken = zeroForOne ? "WETH" : "NEW";
   const tokenAddress = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
 
-  // Check balances
+  // Read balances
   const { data: wethBalance } = useReadContract({
     address: ADDRESSES.weth,
     abi: erc20Abi,
@@ -63,13 +73,50 @@ export function SwapPanel() {
     query: { enabled: !!address, refetchInterval: 10000 },
   });
 
-  // Check ERC20 allowance to Permit2
+  // Read on-chain allowance
   const { data: erc20Allowance, refetch: refetchAllowance } = useReadContract({
     address: tokenAddress,
     abi: erc20Abi,
     functionName: "allowance",
     args: [address!, ADDRESSES.permit2],
-    query: { enabled: !!address },
+    query: { enabled: !!address, refetchInterval: 10000 },
+  });
+
+  // Read pool state: sqrtPrice and liquidity
+  const slot0Slot = getSlot0StorageSlot(PROTECTED_POOL_ID);
+  const liqSlot = getLiquidityStorageSlot(PROTECTED_POOL_ID);
+
+  const { data: slot0Data } = useReadContract({
+    address: ADDRESSES.poolManager,
+    abi: poolManagerAbi,
+    functionName: "extsload",
+    args: [slot0Slot],
+    query: { refetchInterval: 10000 },
+  });
+
+  const { data: liqData } = useReadContract({
+    address: ADDRESSES.poolManager,
+    abi: poolManagerAbi,
+    functionName: "extsload",
+    args: [liqSlot],
+    query: { refetchInterval: 10000 },
+  });
+
+  // Read hook config
+  const { data: configData } = useReadContract({
+    address: ADDRESSES.hook,
+    abi: hookAbi,
+    functionName: "poolConfigs",
+    args: [PROTECTED_POOL_ID],
+  });
+
+  // Read cached reference price
+  const { data: lastRefPrice } = useReadContract({
+    address: ADDRESSES.hook,
+    abi: hookAbi,
+    functionName: "lastReferenceSqrtPrice",
+    args: [PROTECTED_POOL_ID],
+    query: { refetchInterval: 10000 },
   });
 
   const amountIn = useMemo(() => {
@@ -83,54 +130,35 @@ export function SwapPanel() {
   const needsApproval =
     erc20Allowance !== undefined && (erc20Allowance as bigint) < amountIn;
 
-  // Approve: ERC20 -> Permit2, then Permit2 -> Router
-  const isApproving =
-    approveErc20.isPending ||
-    isApproveConfirming ||
-    approvePermit2.isPending ||
-    isPermitConfirming;
+  // Compute estimated impact from on-chain data
+  const poolState = useMemo(() => {
+    if (!slot0Data || !liqData || !configData) return null;
+    const { sqrtPriceX96 } = parseSlot0(slot0Data);
+    const liquidity = BigInt(liqData) & ((1n << 128n) - 1n); // lower 128 bits
+    const highImpactThresholdBps = Number(configData[4]);
+    const circuitBreakerBps = Number(configData[5]);
+    return { sqrtPriceX96, liquidity, highImpactThresholdBps, circuitBreakerBps };
+  }, [slot0Data, liqData, configData]);
 
-  async function handleApprove() {
-    // Step 1: ERC20 approve to Permit2
-    approveErc20.writeContract(
-      {
-        address: tokenAddress,
-        abi: erc20Abi,
-        functionName: "approve",
-        args: [ADDRESSES.permit2, parseEther("1000000")],
-      },
-      {
-        onSuccess: () => {
-          // Step 2: Permit2 approve to swap router
-          approvePermit2.writeContract(
-            {
-              address: ADDRESSES.permit2,
-              abi: permit2Abi,
-              functionName: "approve",
-              args: [
-                tokenAddress,
-                ADDRESSES.swapRouter,
-                BigInt(
-                  "1461501637330902918203684832716283019655932542975"
-                ),
-                281474976710655,
-              ],
-            },
-            {
-              onSuccess: () => {
-                refetchAllowance();
-              },
-            }
-          );
-        },
-      }
+  const impactEstimate = useMemo(() => {
+    if (!poolState || amountIn === 0n) return null;
+    const impactBps = estimateSwapImpactBps(
+      amountIn,
+      poolState.liquidity,
+      poolState.sqrtPriceX96,
+      zeroForOne
     );
-  }
+    const tier = predictFeeTier(
+      impactBps,
+      poolState.highImpactThresholdBps,
+      poolState.circuitBreakerBps
+    );
+    return { impactBps, tier };
+  }, [poolState, amountIn, zeroForOne]);
 
-  // Simulate swap before sending
+  // Simulate swap for circuit breaker detection
   const simulateSwap = useCallback(async () => {
     if (!client || !address || amountIn === 0n) return;
-
     const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
     try {
       await client.simulateContract({
@@ -138,9 +166,7 @@ export function SwapPanel() {
         abi: swapRouterAbi,
         functionName: "swapExactTokensForTokens",
         args: [
-          amountIn,
-          0n,
-          zeroForOne,
+          amountIn, 0n, zeroForOne,
           {
             currency0: PROTECTED_POOL_KEY.currency0,
             currency1: PROTECTED_POOL_KEY.currency1,
@@ -155,21 +181,17 @@ export function SwapPanel() {
         account: address,
       });
       setSimStatus("ok");
-      setSimError("");
     } catch (e: any) {
       const msg = e?.message ?? "";
       if (msg.includes("CircuitBreakerTriggered")) {
         setSimStatus("circuit-breaker");
-        setSimError("");
       } else {
-        // Ignore allowance-related errors — those are expected before approval
+        // Allowance or other errors — don't block
         setSimStatus("ok");
-        setSimError("");
       }
     }
   }, [client, address, amountIn, zeroForOne]);
 
-  // Run simulation when amount changes
   useEffect(() => {
     setSimStatus("idle");
     if (amountIn > 0n) {
@@ -177,18 +199,52 @@ export function SwapPanel() {
     }
   }, [amountIn, zeroForOne, simulateSwap]);
 
-  function handleSwap() {
-    if (!address || simStatus === "circuit-breaker") return;
-    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+  const isBlocked =
+    simStatus === "circuit-breaker" || impactEstimate?.tier === "blocked";
 
+  // Approve handlers
+  const isApproving =
+    approveErc20.isPending || isApproveConfirming ||
+    approvePermit2.isPending || isPermitConfirming;
+
+  function handleApprove() {
+    approveErc20.writeContract(
+      {
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [ADDRESSES.permit2, parseEther("1000000")],
+      },
+      {
+        onSuccess: () => {
+          approvePermit2.writeContract(
+            {
+              address: ADDRESSES.permit2,
+              abi: permit2Abi,
+              functionName: "approve",
+              args: [
+                tokenAddress,
+                ADDRESSES.swapRouter,
+                BigInt("1461501637330902918203684832716283019655932542975"),
+                281474976710655,
+              ],
+            },
+            { onSuccess: () => refetchAllowance() }
+          );
+        },
+      }
+    );
+  }
+
+  function handleSwap() {
+    if (!address || isBlocked) return;
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
     swap.writeContract({
       address: ADDRESSES.swapRouter,
       abi: swapRouterAbi,
       functionName: "swapExactTokensForTokens",
       args: [
-        amountIn,
-        0n,
-        zeroForOne,
+        amountIn, 0n, zeroForOne,
         {
           currency0: PROTECTED_POOL_KEY.currency0,
           currency1: PROTECTED_POOL_KEY.currency1,
@@ -244,7 +300,7 @@ export function SwapPanel() {
           </button>
         </div>
 
-        {/* Amount input */}
+        {/* Amount */}
         <div>
           <label className="text-sm text-gray-400 block mb-1">
             Amount ({inputToken})
@@ -261,40 +317,55 @@ export function SwapPanel() {
         {/* Balances */}
         <div className="text-xs text-gray-500 space-y-1">
           <p>
-            WETH balance:{" "}
-            {wethBalance !== undefined
-              ? (Number(wethBalance) / 1e18).toFixed(4)
-              : "..."}
+            WETH: {wethBalance !== undefined ? (Number(wethBalance) / 1e18).toFixed(4) : "..."}
           </p>
           <p>
-            NEW balance:{" "}
-            {newtokenBalance !== undefined
-              ? (Number(newtokenBalance) / 1e18).toFixed(4)
-              : "..."}
+            NEW: {newtokenBalance !== undefined ? (Number(newtokenBalance) / 1e18).toFixed(4) : "..."}
           </p>
         </div>
 
-        {/* Fee tier hint */}
-        <div className="text-xs bg-gray-800/50 rounded p-2">
-          <p className="text-gray-400">Expected fee tier based on amount:</p>
-          <p className="font-mono text-yellow-400">
-            {Number(amount) < 0.1
-              ? "Base (0.30%)"
-              : Number(amount) < 2
-              ? "Elevated (1.00%)"
-              : "Circuit breaker (BLOCKED)"}
-          </p>
-        </div>
-
-        {/* Circuit breaker warning */}
-        {simStatus === "circuit-breaker" && (
-          <div className="bg-red-900/40 border border-red-600/50 rounded p-3 text-sm text-red-300">
-            Circuit breaker triggered — this swap would be blocked by the hook.
-            Reduce the amount or wait for reference pool movement.
+        {/* Impact estimate from on-chain data */}
+        {impactEstimate && poolState && (
+          <div
+            className={`text-sm rounded p-3 border ${
+              impactEstimate.tier === "blocked"
+                ? "bg-red-900/40 border-red-600/50 text-red-300"
+                : impactEstimate.tier === "elevated"
+                ? "bg-yellow-900/40 border-yellow-600/50 text-yellow-300"
+                : "bg-gray-800/50 border-gray-700/50 text-gray-300"
+            }`}
+          >
+            <div className="flex justify-between items-center">
+              <span>Estimated price impact</span>
+              <span className="font-mono font-semibold">
+                {bpsToPercent(impactEstimate.impactBps)}
+              </span>
+            </div>
+            <div className="flex justify-between items-center mt-1">
+              <span>Expected fee</span>
+              <span className="font-mono">
+                {impactEstimate.tier === "blocked"
+                  ? "BLOCKED (circuit breaker)"
+                  : impactEstimate.tier === "elevated"
+                  ? "1.00% (elevated)"
+                  : "0.30% (base)"}
+              </span>
+            </div>
+            <div className="text-xs text-gray-500 mt-1">
+              Pool liquidity: {(Number(poolState.liquidity) / 1e18).toFixed(2)} |
+              Thresholds: {bpsToPercent(poolState.highImpactThresholdBps)} / {bpsToPercent(poolState.circuitBreakerBps)}
+            </div>
           </div>
         )}
 
-        {/* Action buttons */}
+        {/* Circuit breaker from simulation */}
+        {simStatus === "circuit-breaker" && (
+          <div className="bg-red-900/40 border border-red-600/50 rounded p-3 text-sm text-red-300">
+            Circuit breaker confirmed by on-chain simulation.
+          </div>
+        )}
+
+        {/* Buttons */}
         <div className="flex gap-2">
           {needsApproval && (
             <button
@@ -307,18 +378,16 @@ export function SwapPanel() {
           )}
           <button
             onClick={handleSwap}
-            disabled={
-              swap.isPending || simStatus === "circuit-breaker"
-            }
+            disabled={swap.isPending || isBlocked}
             className={`flex-1 px-3 py-2 rounded text-sm font-semibold disabled:opacity-50 ${
-              simStatus === "circuit-breaker"
+              isBlocked
                 ? "bg-red-800 cursor-not-allowed"
                 : "bg-indigo-600 hover:bg-indigo-500"
             }`}
           >
             {swap.isPending
               ? "Confirming..."
-              : simStatus === "circuit-breaker"
+              : isBlocked
               ? "BLOCKED"
               : `Swap ${inputToken} -> ${outputToken}`}
           </button>
@@ -326,9 +395,7 @@ export function SwapPanel() {
 
         {/* Status */}
         {isSwapConfirming && (
-          <p className="text-sm text-yellow-400">
-            Waiting for confirmation...
-          </p>
+          <p className="text-sm text-yellow-400">Waiting for confirmation...</p>
         )}
         {isSwapSuccess && (
           <p className="text-sm text-green-400">Swap confirmed!</p>
@@ -336,7 +403,7 @@ export function SwapPanel() {
         {swap.error && (
           <p className="text-sm text-red-400 break-all">
             {swap.error.message.includes("CircuitBreakerTriggered")
-              ? "Circuit breaker triggered - swap too large!"
+              ? "Circuit breaker triggered!"
               : swap.error.message.slice(0, 200)}
           </p>
         )}
