@@ -199,7 +199,7 @@ export function SwapPanel() {
             disabled={permit2.isPending}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
           >
-            {permit2.isPending ? "..." : permit2.isSuccess ? "2. Done" : "2. Permit2"}
+            {permit2.isPending ? "..." : permit2.isSuccess ? "2. Done" : "2. Permit"}
           </button>
           <button
             onClick={handleSwap}
