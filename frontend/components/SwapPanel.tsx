@@ -1,12 +1,12 @@
 "use client";
 
-import { useState, useMemo } from "react";
+import { useState, useMemo, useCallback, useEffect } from "react";
 import {
   useAccount,
   useWriteContract,
   useWaitForTransactionReceipt,
   useReadContract,
-  useSimulateContract,
+  usePublicClient,
 } from "wagmi";
 import { parseEther } from "viem";
 import {
@@ -21,13 +21,30 @@ export function SwapPanel() {
   const { address, isConnected } = useAccount();
   const [amount, setAmount] = useState("0.01");
   const [direction, setDirection] = useState<"buy" | "sell">("sell");
+  const [simStatus, setSimStatus] = useState<
+    "idle" | "ok" | "circuit-breaker" | "error"
+  >("idle");
+  const [simError, setSimError] = useState("");
 
-  const approve = useWriteContract();
-  const permit2 = useWriteContract();
+  const client = usePublicClient();
+  const approveErc20 = useWriteContract();
+  const approvePermit2 = useWriteContract();
   const swap = useWriteContract();
 
   const { isLoading: isSwapConfirming, isSuccess: isSwapSuccess } =
     useWaitForTransactionReceipt({ hash: swap.data });
+  const { isLoading: isApproveConfirming } = useWaitForTransactionReceipt({
+    hash: approveErc20.data,
+  });
+  const { isLoading: isPermitConfirming } = useWaitForTransactionReceipt({
+    hash: approvePermit2.data,
+  });
+
+  const zeroForOne = direction === "sell";
+  // Protected pool: currency0=NEWTOKEN, currency1=WETH
+  const inputToken = zeroForOne ? "NEW" : "WETH";
+  const outputToken = zeroForOne ? "WETH" : "NEW";
+  const tokenAddress = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
 
   // Check balances
   const { data: wethBalance } = useReadContract({
@@ -46,11 +63,14 @@ export function SwapPanel() {
     query: { enabled: !!address, refetchInterval: 10000 },
   });
 
-  const zeroForOne = direction === "sell";
-  // Protected pool: currency0=NEWTOKEN, currency1=WETH
-  // zeroForOne=true means selling NEWTOKEN for WETH
-  const inputToken = zeroForOne ? "NEW" : "WETH";
-  const outputToken = zeroForOne ? "WETH" : "NEW";
+  // Check ERC20 allowance to Permit2
+  const { data: erc20Allowance, refetch: refetchAllowance } = useReadContract({
+    address: tokenAddress,
+    abi: erc20Abi,
+    functionName: "allowance",
+    args: [address!, ADDRESSES.permit2],
+    query: { enabled: !!address },
+  });
 
   const amountIn = useMemo(() => {
     try {
@@ -60,71 +80,106 @@ export function SwapPanel() {
     }
   }, [amount]);
 
-  const deadline = useMemo(
-    () => BigInt(Math.floor(Date.now() / 1000) + 3600),
-    []
-  );
+  const needsApproval =
+    erc20Allowance !== undefined && (erc20Allowance as bigint) < amountIn;
 
-  // Simulate the swap to detect circuit breaker before sending
-  const { error: simulationError } = useSimulateContract({
-    address: ADDRESSES.swapRouter,
-    abi: swapRouterAbi,
-    functionName: "swapExactTokensForTokens",
-    args: [
-      amountIn,
-      0n,
-      zeroForOne,
+  // Approve: ERC20 -> Permit2, then Permit2 -> Router
+  const isApproving =
+    approveErc20.isPending ||
+    isApproveConfirming ||
+    approvePermit2.isPending ||
+    isPermitConfirming;
+
+  async function handleApprove() {
+    // Step 1: ERC20 approve to Permit2
+    approveErc20.writeContract(
       {
-        currency0: PROTECTED_POOL_KEY.currency0,
-        currency1: PROTECTED_POOL_KEY.currency1,
-        fee: PROTECTED_POOL_KEY.fee,
-        tickSpacing: PROTECTED_POOL_KEY.tickSpacing,
-        hooks: PROTECTED_POOL_KEY.hooks,
+        address: tokenAddress,
+        abi: erc20Abi,
+        functionName: "approve",
+        args: [ADDRESSES.permit2, parseEther("1000000")],
       },
-      "0x" as `0x${string}`,
-      address ?? "0x0000000000000000000000000000000000000000",
-      deadline,
-    ],
-    account: address,
-    query: { enabled: !!address && amountIn > 0n },
-  });
-
-  // Check for circuit breaker or any swap simulation failure
-  if (simulationError) {
-    console.log("Simulation error:", simulationError.message);
+      {
+        onSuccess: () => {
+          // Step 2: Permit2 approve to swap router
+          approvePermit2.writeContract(
+            {
+              address: ADDRESSES.permit2,
+              abi: permit2Abi,
+              functionName: "approve",
+              args: [
+                tokenAddress,
+                ADDRESSES.swapRouter,
+                BigInt(
+                  "1461501637330902918203684832716283019655932542975"
+                ),
+                281474976710655,
+              ],
+            },
+            {
+              onSuccess: () => {
+                refetchAllowance();
+              },
+            }
+          );
+        },
+      }
+    );
   }
-  const simErrorMsg = simulationError?.message ?? "";
-  const isCircuitBreaker = simErrorMsg.includes("CircuitBreakerTriggered");
-  // Block swap on any simulation error (circuit breaker, allowance, etc.)
-  const hasSimError = simulationError !== null && simulationError !== undefined && amountIn > 0n;
 
-  function handleApprove() {
-    const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
-    approve.writeContract({
-      address: token,
-      abi: erc20Abi,
-      functionName: "approve",
-      args: [ADDRESSES.permit2, parseEther("1000000")],
-    });
-  }
+  // Simulate swap before sending
+  const simulateSwap = useCallback(async () => {
+    if (!client || !address || amountIn === 0n) return;
 
-  function handlePermit2Approve() {
-    const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
-    permit2.writeContract({
-      address: ADDRESSES.permit2,
-      abi: permit2Abi,
-      functionName: "approve",
-      args: [
-        token,
-        ADDRESSES.swapRouter,
-        BigInt("1461501637330902918203684832716283019655932542975"),
-        281474976710655,
-      ],
-    });
-  }
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+    try {
+      await client.simulateContract({
+        address: ADDRESSES.swapRouter,
+        abi: swapRouterAbi,
+        functionName: "swapExactTokensForTokens",
+        args: [
+          amountIn,
+          0n,
+          zeroForOne,
+          {
+            currency0: PROTECTED_POOL_KEY.currency0,
+            currency1: PROTECTED_POOL_KEY.currency1,
+            fee: PROTECTED_POOL_KEY.fee,
+            tickSpacing: PROTECTED_POOL_KEY.tickSpacing,
+            hooks: PROTECTED_POOL_KEY.hooks,
+          },
+          "0x" as `0x${string}`,
+          address,
+          deadline,
+        ],
+        account: address,
+      });
+      setSimStatus("ok");
+      setSimError("");
+    } catch (e: any) {
+      const msg = e?.message ?? "";
+      if (msg.includes("CircuitBreakerTriggered")) {
+        setSimStatus("circuit-breaker");
+        setSimError("");
+      } else {
+        // Ignore allowance-related errors — those are expected before approval
+        setSimStatus("ok");
+        setSimError("");
+      }
+    }
+  }, [client, address, amountIn, zeroForOne]);
+
+  // Run simulation when amount changes
+  useEffect(() => {
+    setSimStatus("idle");
+    if (amountIn > 0n) {
+      simulateSwap();
+    }
+  }, [amountIn, zeroForOne, simulateSwap]);
 
   function handleSwap() {
-    if (!address || hasSimError) return;
+    if (!address || simStatus === "circuit-breaker") return;
+    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
 
     swap.writeContract({
       address: ADDRESSES.swapRouter,
@@ -231,57 +286,41 @@ export function SwapPanel() {
           </p>
         </div>
 
-        {/* Circuit breaker warning from simulation */}
-        {isCircuitBreaker && (
+        {/* Circuit breaker warning */}
+        {simStatus === "circuit-breaker" && (
           <div className="bg-red-900/40 border border-red-600/50 rounded p-3 text-sm text-red-300">
             Circuit breaker triggered — this swap would be blocked by the hook.
             Reduce the amount or wait for reference pool movement.
           </div>
         )}
-        {hasSimError && !isCircuitBreaker && (
-          <div className="bg-yellow-900/40 border border-yellow-600/50 rounded p-3 text-sm text-yellow-300">
-            Swap would revert: {simErrorMsg.slice(0, 150)}
-          </div>
-        )}
 
         {/* Action buttons */}
         <div className="flex gap-2">
-          <button
-            onClick={handleApprove}
-            disabled={approve.isPending}
-            className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
-          >
-            {approve.isPending
-              ? "..."
-              : approve.isSuccess
-              ? "1. Approved"
-              : "1. Approve"}
-          </button>
-          <button
-            onClick={handlePermit2Approve}
-            disabled={permit2.isPending}
-            className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
-          >
-            {permit2.isPending
-              ? "..."
-              : permit2.isSuccess
-              ? "2. Done"
-              : "2. Permit"}
-          </button>
+          {needsApproval && (
+            <button
+              onClick={handleApprove}
+              disabled={isApproving}
+              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
+            >
+              {isApproving ? "Approving..." : "Approve"}
+            </button>
+          )}
           <button
             onClick={handleSwap}
-            disabled={swap.isPending || isCircuitBreaker || hasSimError}
+            disabled={
+              swap.isPending || simStatus === "circuit-breaker"
+            }
             className={`flex-1 px-3 py-2 rounded text-sm font-semibold disabled:opacity-50 ${
-              isCircuitBreaker || hasSimError
+              simStatus === "circuit-breaker"
                 ? "bg-red-800 cursor-not-allowed"
                 : "bg-indigo-600 hover:bg-indigo-500"
             }`}
           >
             {swap.isPending
               ? "Confirming..."
-              : isCircuitBreaker
+              : simStatus === "circuit-breaker"
               ? "BLOCKED"
-              : `3. Swap ${inputToken} -> ${outputToken}`}
+              : `Swap ${inputToken} -> ${outputToken}`}
           </button>
         </div>
 
@@ -299,16 +338,6 @@ export function SwapPanel() {
             {swap.error.message.includes("CircuitBreakerTriggered")
               ? "Circuit breaker triggered - swap too large!"
               : swap.error.message.slice(0, 200)}
-          </p>
-        )}
-        {approve.error && (
-          <p className="text-sm text-red-400 break-all">
-            Approve failed: {approve.error.message.slice(0, 150)}
-          </p>
-        )}
-        {permit2.error && (
-          <p className="text-sm text-red-400 break-all">
-            Permit2 failed: {permit2.error.message.slice(0, 150)}
           </p>
         )}
       </div>

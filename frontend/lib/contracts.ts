@@ -116,6 +116,16 @@ export const erc20Abi = [
   },
   {
     type: "function",
+    name: "allowance",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+    stateMutability: "view",
+  },
+  {
+    type: "function",
     name: "symbol",
     inputs: [],
     outputs: [{ name: "", type: "string" }],
