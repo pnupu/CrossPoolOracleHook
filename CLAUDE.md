@@ -14,13 +14,13 @@ Built for HackMoney 2026, targeting Uniswap Foundation tracks.
 forge build                                            # Compile contracts
 forge test                                             # Run all tests (12 total)
 forge test --match-path test/CrossPoolOracleHook.t.sol  # Run hook tests only (6 tests)
-cd frontend && npm run dev                              # Run frontend locally
+cd frontend && bun dev                                  # Run frontend locally
 ```
 
 ## Architecture
 
 - **Solidity ^0.8.26** / **Foundry** toolchain
-- **Next.js 14** / **wagmi v2** / **Tailwind CSS** frontend
+- **Next.js 14** / **wagmi v2** / **Tailwind CSS** frontend — use **bun** for package management and scripts
 - Dependencies: OpenZeppelin uniswap-hooks, hookmate, forge-std
 
 ### Core Contract: `src/CrossPoolOracleHook.sol`
@@ -92,5 +92,5 @@ forge script script/DemoSwaps.s.sol:DemoSwaps \
   --rpc-url <RPC> --private-key <KEY> --broadcast -v
 
 # Frontend
-cd frontend && npm install && npm run dev
+cd frontend && bun install && bun dev
 ```
