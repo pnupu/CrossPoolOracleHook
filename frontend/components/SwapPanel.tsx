@@ -89,17 +89,14 @@ export function SwapPanel() {
     query: { enabled: !!address && amountIn > 0n },
   });
 
-  // Check for circuit breaker or any swap revert
+  // Check for circuit breaker or any swap simulation failure
   if (simulationError) {
     console.log("Simulation error:", simulationError.message);
   }
   const simErrorMsg = simulationError?.message ?? "";
   const isCircuitBreaker = simErrorMsg.includes("CircuitBreakerTriggered");
-  const isSwapRevert =
-    !isCircuitBreaker &&
-    simulationError !== null &&
-    amountIn > 0n &&
-    simErrorMsg.includes("revert");
+  // Block swap on any simulation error (circuit breaker, allowance, etc.)
+  const hasSimError = simulationError !== null && simulationError !== undefined && amountIn > 0n;
 
   function handleApprove() {
     const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
@@ -127,7 +124,7 @@ export function SwapPanel() {
   }
 
   function handleSwap() {
-    if (!address || isCircuitBreaker) return;
+    if (!address || hasSimError) return;
 
     swap.writeContract({
       address: ADDRESSES.swapRouter,
@@ -241,9 +238,9 @@ export function SwapPanel() {
             Reduce the amount or wait for reference pool movement.
           </div>
         )}
-        {isSwapRevert && (
+        {hasSimError && !isCircuitBreaker && (
           <div className="bg-yellow-900/40 border border-yellow-600/50 rounded p-3 text-sm text-yellow-300">
-            Swap would revert. Make sure you&apos;ve approved tokens (steps 1 &amp; 2) first.
+            Swap would revert: {simErrorMsg.slice(0, 150)}
           </div>
         )}
 
@@ -273,9 +270,9 @@ export function SwapPanel() {
           </button>
           <button
             onClick={handleSwap}
-            disabled={swap.isPending || isCircuitBreaker || isSwapRevert}
+            disabled={swap.isPending || isCircuitBreaker || hasSimError}
             className={`flex-1 px-3 py-2 rounded text-sm font-semibold disabled:opacity-50 ${
-              isCircuitBreaker || isSwapRevert
+              isCircuitBreaker || hasSimError
                 ? "bg-red-800 cursor-not-allowed"
                 : "bg-indigo-600 hover:bg-indigo-500"
             }`}
