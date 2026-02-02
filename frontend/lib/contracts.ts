@@ -2,10 +2,10 @@ import { type Address } from "viem";
 
 // === Sepolia deployment addresses ===
 export const ADDRESSES = {
-  hook: "0x4112Af357570ADc7C6D35801Af1d64eEb57e90c0" as Address,
-  weth: "0xB33638d05b9A69bb1731027d3F3561Cc03aD2c74" as Address,
-  usdc: "0x75EaaB39eB72db66372852e1beeFebA2dE5FE7f5" as Address,
-  newtoken: "0xF4EB0d2406aD8897c0350b7be2551663a765c234" as Address,
+  hook: "0x9c981cdc56335664F21448cA4f40c54390B7D0C0" as Address,
+  weth: "0x53f646Df4442A1Caca581078Ca63076D882640A4" as Address,
+  usdc: "0x0B2B7b0fa0ad02D6A2bbE5d93cAE06045f849C8A" as Address,
+  newtoken: "0x12b067D6755340bd03fdFA370D73A84f7Ad06c19" as Address,
   poolManager: "0xE03A1074c86CFeDd5C142C4F04F1a1536e203543" as Address,
   swapRouter: "0xf13D190e9117920c703d79B5F33732e10049b115" as Address,
   permit2: "0x000000000022D473030F116dDEE9F6B43aC78BA3" as Address,
@@ -21,10 +21,10 @@ export const REFERENCE_POOL_KEY = {
   hooks: "0x0000000000000000000000000000000000000000" as Address,
 } as const;
 
-// Protected pool: WETH(currency0) / NEWTOKEN(currency1), fee=DYNAMIC, tickSpacing=60, hooks=hook
+// Protected pool: NEWTOKEN(currency0) / WETH(currency1), fee=DYNAMIC, tickSpacing=60, hooks=hook
 export const PROTECTED_POOL_KEY = {
-  currency0: ADDRESSES.weth,
-  currency1: ADDRESSES.newtoken,
+  currency0: ADDRESSES.newtoken,
+  currency1: ADDRESSES.weth,
   fee: 8388608, // LPFeeLibrary.DYNAMIC_FEE_FLAG
   tickSpacing: 60,
   hooks: ADDRESSES.hook,
@@ -32,9 +32,9 @@ export const PROTECTED_POOL_KEY = {
 
 // === Pool IDs (keccak256 of abi.encode(poolKey)) ===
 export const REFERENCE_POOL_ID =
-  "0xa809bca02a254188e0547595bf5dae238b8a5e807e3e699c3204f13742ed0e3e" as `0x${string}`;
+  "0x3917e2df25f138fac834798f50946127f49d2991edfcbd893bf1df3c4a6f366b" as `0x${string}`;
 export const PROTECTED_POOL_ID =
-  "0x9678bc6421e11d6f5d2d5fea508093b498f605629c7085c7d8f435339049619b" as `0x${string}`;
+  "0x244a813e4231897b688102fb2d5d00286ac0488eaa0fc02e4dd414c198413abc" as `0x${string}`;
 
 // === ABIs ===
 export const hookAbi = [

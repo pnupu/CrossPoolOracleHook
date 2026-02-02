@@ -42,8 +42,8 @@ export default function Home() {
         <PoolCard
           title="Protected Pool"
           poolId={PROTECTED_POOL_ID}
-          token0Symbol="WETH"
-          token1Symbol="NEW"
+          token0Symbol="NEW"
+          token1Symbol="WETH"
           isProtected={true}
         />
       </div>

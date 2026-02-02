@@ -44,13 +44,13 @@ export function SwapPanel() {
   });
 
   const zeroForOne = direction === "sell";
-  // Protected pool: currency0=WETH, currency1=NEWTOKEN
-  // zeroForOne=true means selling WETH for NEWTOKEN
-  const inputToken = zeroForOne ? "WETH" : "NEW";
-  const outputToken = zeroForOne ? "NEW" : "WETH";
+  // Protected pool: currency0=NEWTOKEN, currency1=WETH
+  // zeroForOne=true means selling NEWTOKEN for WETH
+  const inputToken = zeroForOne ? "NEW" : "WETH";
+  const outputToken = zeroForOne ? "WETH" : "NEW";
 
   function handleApprove() {
-    const token = zeroForOne ? ADDRESSES.weth : ADDRESSES.newtoken;
+    const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
     writeContract({
       address: token,
       abi: erc20Abi,
@@ -60,7 +60,7 @@ export function SwapPanel() {
   }
 
   function handlePermit2Approve() {
-    const token = zeroForOne ? ADDRESSES.weth : ADDRESSES.newtoken;
+    const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
     writeContract({
       address: ADDRESSES.permit2,
       abi: permit2Abi,
@@ -129,7 +129,7 @@ export function SwapPanel() {
                 : "bg-gray-800 text-gray-400"
             }`}
           >
-            Sell WETH for NEW
+            Sell NEW for WETH
           </button>
           <button
             onClick={() => setDirection("buy")}
@@ -139,7 +139,7 @@ export function SwapPanel() {
                 : "bg-gray-800 text-gray-400"
             }`}
           >
-            Sell NEW for WETH
+            Sell WETH for NEW
           </button>
         </div>
 

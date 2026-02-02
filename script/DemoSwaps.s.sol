@@ -23,10 +23,10 @@ contract DemoSwaps is Script {
     using StateLibrary for IPoolManager;
 
     // === Sepolia deployment addresses ===
-    address constant HOOK = 0x4112Af357570ADc7C6D35801Af1d64eEb57e90c0;
-    address constant WETH = 0xB33638d05b9A69bb1731027d3F3561Cc03aD2c74;
-    address constant USDC = 0x75EaaB39eB72db66372852e1beeFebA2dE5FE7f5;
-    address constant NEWTOKEN = 0xF4EB0d2406aD8897c0350b7be2551663a765c234;
+    address constant HOOK = 0x9c981cdc56335664F21448cA4f40c54390B7D0C0;
+    address constant WETH = 0x53f646Df4442A1Caca581078Ca63076D882640A4;
+    address constant USDC = 0x0B2B7b0fa0ad02D6A2bbE5d93cAE06045f849C8A;
+    address constant NEWTOKEN = 0x12b067D6755340bd03fdFA370D73A84f7Ad06c19;
 
     address constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
     address payable constant SWAP_ROUTER = payable(0xf13D190e9117920c703d79B5F33732e10049b115);
