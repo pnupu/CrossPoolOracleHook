@@ -68,11 +68,12 @@ export function shortenAddress(addr: string): string {
   return addr.slice(0, 6) + "..." + addr.slice(-4);
 }
 
-/** Compute the storage slot for a pool's liquidity in PoolManager (slot0 + 1) */
+/** Compute the storage slot for a pool's liquidity in PoolManager (slot0 + 3) */
 export function getLiquidityStorageSlot(poolId: Hex): Hex {
   const slot0 = getSlot0StorageSlot(poolId);
   const slot0Num = BigInt(slot0);
-  return ("0x" + (slot0Num + 1n).toString(16).padStart(64, "0")) as Hex;
+  // Pool.State layout: slot0(+0), feeGrowthGlobal0X128(+1), feeGrowthGlobal1X128(+2), liquidity(+3)
+  return ("0x" + (slot0Num + 3n).toString(16).padStart(64, "0")) as Hex;
 }
 
 /** Estimate swap price impact in bps using sqrtPrice-based AMM math.
