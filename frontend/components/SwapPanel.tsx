@@ -89,8 +89,17 @@ export function SwapPanel() {
     query: { enabled: !!address && amountIn > 0n },
   });
 
-  const isCircuitBreaker =
-    simulationError?.message?.includes("CircuitBreakerTriggered") ?? false;
+  // Check for circuit breaker or any swap revert
+  if (simulationError) {
+    console.log("Simulation error:", simulationError.message);
+  }
+  const simErrorMsg = simulationError?.message ?? "";
+  const isCircuitBreaker = simErrorMsg.includes("CircuitBreakerTriggered");
+  const isSwapRevert =
+    !isCircuitBreaker &&
+    simulationError !== null &&
+    amountIn > 0n &&
+    simErrorMsg.includes("revert");
 
   function handleApprove() {
     const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
@@ -232,6 +241,11 @@ export function SwapPanel() {
             Reduce the amount or wait for reference pool movement.
           </div>
         )}
+        {isSwapRevert && (
+          <div className="bg-yellow-900/40 border border-yellow-600/50 rounded p-3 text-sm text-yellow-300">
+            Swap would revert. Make sure you&apos;ve approved tokens (steps 1 &amp; 2) first.
+          </div>
+        )}
 
         {/* Action buttons */}
         <div className="flex gap-2">
@@ -259,9 +273,9 @@ export function SwapPanel() {
           </button>
           <button
             onClick={handleSwap}
-            disabled={swap.isPending || isCircuitBreaker}
+            disabled={swap.isPending || isCircuitBreaker || isSwapRevert}
             className={`flex-1 px-3 py-2 rounded text-sm font-semibold disabled:opacity-50 ${
-              isCircuitBreaker
+              isCircuitBreaker || isSwapRevert
                 ? "bg-red-800 cursor-not-allowed"
                 : "bg-indigo-600 hover:bg-indigo-500"
             }`}
