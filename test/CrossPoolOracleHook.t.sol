@@ -242,6 +242,73 @@ contract CrossPoolOracleHookTest is BaseTest {
         assertEq(storedRefPrice, refSqrtPrice, "Hook should store reference price on init");
     }
 
+    // ============ Test: Multi-reference pool support ============
+
+    function test_MultiReference_MaxMovementUsed() public {
+        // Create a second reference pool (USDC/NEWTOKEN) with deep liquidity
+        // We reuse existing tokens; just need a new pool with no hook
+        Currency ref2C0;
+        Currency ref2C1;
+        if (Currency.unwrap(usdc) < Currency.unwrap(newtoken)) {
+            ref2C0 = usdc;
+            ref2C1 = newtoken;
+        } else {
+            ref2C0 = newtoken;
+            ref2C1 = usdc;
+        }
+        PoolKey memory ref2Key = PoolKey(ref2C0, ref2C1, 3000, 60, IHooks(address(0)));
+        poolManager.initialize(ref2Key, Constants.SQRT_PRICE_1_1);
+        _addLiquidity(ref2Key, 1000e18);
+        PoolId ref2PoolId = ref2Key.toId();
+
+        // Deploy a new hook for the multi-ref test
+        address flags2 = address(
+            uint160(
+                Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+            ) ^ (0x5555 << 144)
+        );
+        bytes memory constructorArgs2 = abi.encode(poolManager, address(this));
+        deployCodeTo("CrossPoolOracleHook.sol:CrossPoolOracleHook", constructorArgs2, flags2);
+        CrossPoolOracleHook hook2 = CrossPoolOracleHook(flags2);
+
+        // Register with TWO reference pools
+        PoolId[] memory refs = new PoolId[](2);
+        refs[0] = referencePoolId;
+        refs[1] = ref2PoolId;
+        bool[] memory dirs = new bool[](2);
+        dirs[0] = true;
+        dirs[1] = true;
+
+        PoolKey memory multiProtKey = PoolKey(newtoken, weth, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook2));
+        hook2.registerPoolMultiRef(multiProtKey, refs, dirs, 3000, 10000, 200, 1000);
+        poolManager.initialize(multiProtKey, Constants.SQRT_PRICE_1_1);
+        _addLiquidity(multiProtKey, 10e18);
+
+        // Move only the SECOND reference pool
+        swapRouter.swapExactTokensForTokens({
+            amountIn: 50e18,
+            amountOutMin: 0,
+            zeroForOne: true,
+            poolKey: ref2Key,
+            hookData: "",
+            receiver: address(this),
+            deadline: block.timestamp + 1
+        });
+
+        // Swap on multi-ref protected pool should succeed because ref2 moved
+        BalanceDelta delta = swapRouter.swapExactTokensForTokens({
+            amountIn: 0.5e18,
+            amountOutMin: 0,
+            zeroForOne: true,
+            poolKey: multiProtKey,
+            hookData: "",
+            receiver: address(this),
+            deadline: block.timestamp + 1
+        });
+
+        assertTrue(delta.amount1() > 0, "Multi-ref swap should succeed - ref2 movement explains impact");
+    }
+
     // ============ Helpers ============
 
     function _addLiquidity(PoolKey memory key, uint128 liquidityAmount) internal {

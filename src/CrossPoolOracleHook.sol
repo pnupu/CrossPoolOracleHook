@@ -13,12 +13,12 @@ import {StateLibrary} from "@uniswap/v4-core/src/libraries/StateLibrary.sol";
 import {LPFeeLibrary} from "@uniswap/v4-core/src/libraries/LPFeeLibrary.sol";
 
 /// @title CrossPoolOracleHook
-/// @notice A Uniswap v4 hook that reads a reference pool's price to implement
+/// @notice A Uniswap v4 hook that reads reference pools' prices to implement
 /// dynamic fees and circuit breakers on a protected pool — no external oracle needed.
 ///
-/// The reference pool (e.g. ETH/USDC with deep liquidity) acts as a free, trustless,
-/// same-block price feed. The hook uses this to detect manipulation on thinner pools
-/// and adjust fees accordingly.
+/// Reference pools (e.g. ETH/USDC, ETH/DAI with deep liquidity) act as free,
+/// trustless, same-block price feeds. The hook uses the maximum price movement
+/// across all references to detect manipulation on thinner pools.
 contract CrossPoolOracleHook is BaseHook {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -27,25 +27,33 @@ contract CrossPoolOracleHook is BaseHook {
     error CircuitBreakerTriggered(uint256 impactBps);
     error PoolNotRegistered();
     error OnlyOwner();
+    error TooManyReferences();
+    error EmptyReferences();
 
     // ============ Events ============
-    event PoolRegistered(PoolId indexed protectedPoolId, PoolId indexed referencePoolId, PoolConfig config);
-    event CircuitBreakerHit(PoolId indexed poolId, uint256 impactBps, uint160 refSqrtPrice);
+    event PoolRegistered(PoolId indexed protectedPoolId, uint256 referenceCount);
+    event CircuitBreakerHit(PoolId indexed poolId, uint256 impactBps, uint256 refPriceChangeBps);
     event DynamicFeeApplied(PoolId indexed poolId, uint24 fee, uint256 impactBps);
+
+    // ============ Constants ============
+    uint256 constant MAX_REFERENCES = 5;
 
     // ============ Structs ============
     struct PoolConfig {
-        PoolId referencePoolId;      // The deep liquidity pool to read price from
-        bool referenceZeroForOne;    // Which direction in reference pool gives us the base asset price
-        uint24 baseFee;              // Normal fee (e.g. 3000 = 0.3%)
-        uint24 highImpactFee;        // Fee when price impact is elevated (e.g. 10000 = 1%)
-        uint256 highImpactThresholdBps; // Price impact that triggers elevated fee (e.g. 200 = 2%)
-        uint256 circuitBreakerBps;   // Price impact that blocks the swap entirely (e.g. 1000 = 10%)
+        PoolId[] referencePoolIds;       // Deep liquidity pools to read price from
+        bool[] referenceZeroForOne;      // Direction for each reference pool
+        uint24 baseFee;                  // Normal fee (e.g. 3000 = 0.3%)
+        uint24 highImpactFee;            // Fee when price impact is elevated (e.g. 10000 = 1%)
+        uint256 highImpactThresholdBps;  // Price impact that triggers elevated fee (e.g. 200 = 2%)
+        uint256 circuitBreakerBps;       // Price impact that blocks the swap entirely (e.g. 1000 = 10%)
     }
 
     // ============ State ============
-    mapping(PoolId => PoolConfig) public poolConfigs;
-    mapping(PoolId => uint160) public lastReferenceSqrtPrice; // Track reference price changes
+    mapping(PoolId => PoolConfig) internal _poolConfigs;
+    // Track last reference price per protected pool per reference index
+    mapping(PoolId => mapping(uint256 => uint160)) public lastReferenceSqrtPrices;
+    // Keep single-reference getter for backwards compatibility
+    mapping(PoolId => uint160) public lastReferenceSqrtPrice;
     address public owner;
 
     constructor(IPoolManager _poolManager, address _owner) BaseHook(_poolManager) {
@@ -56,13 +64,13 @@ contract CrossPoolOracleHook is BaseHook {
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
         return Hooks.Permissions({
             beforeInitialize: false,
-            afterInitialize: true,       // Store initial reference price
+            afterInitialize: true,
             beforeAddLiquidity: false,
             afterAddLiquidity: false,
             beforeRemoveLiquidity: false,
             afterRemoveLiquidity: false,
-            beforeSwap: true,            // Dynamic fee + circuit breaker
-            afterSwap: true,             // Update reference price tracking
+            beforeSwap: true,
+            afterSwap: true,
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
@@ -72,10 +80,51 @@ contract CrossPoolOracleHook is BaseHook {
         });
     }
 
+    // ============ View ============
+
+    /// @notice Get the full config for a protected pool
+    function getPoolConfig(PoolId poolId) external view returns (
+        PoolId[] memory referencePoolIds,
+        bool[] memory referenceZeroForOne,
+        uint24 baseFee,
+        uint24 highImpactFee,
+        uint256 highImpactThresholdBps,
+        uint256 circuitBreakerBps
+    ) {
+        PoolConfig storage config = _poolConfigs[poolId];
+        return (
+            config.referencePoolIds,
+            config.referenceZeroForOne,
+            config.baseFee,
+            config.highImpactFee,
+            config.highImpactThresholdBps,
+            config.circuitBreakerBps
+        );
+    }
+
+    /// @notice Legacy single-reference view for backwards compatibility
+    function poolConfigs(PoolId poolId) external view returns (
+        PoolId referencePoolId,
+        bool referenceZeroForOne,
+        uint24 baseFee,
+        uint24 highImpactFee,
+        uint256 highImpactThresholdBps,
+        uint256 circuitBreakerBps
+    ) {
+        PoolConfig storage config = _poolConfigs[poolId];
+        return (
+            config.referencePoolIds.length > 0 ? config.referencePoolIds[0] : PoolId.wrap(bytes32(0)),
+            config.referenceZeroForOne.length > 0 ? config.referenceZeroForOne[0] : false,
+            config.baseFee,
+            config.highImpactFee,
+            config.highImpactThresholdBps,
+            config.circuitBreakerBps
+        );
+    }
+
     // ============ Admin ============
 
-    /// @notice Register a protected pool with its reference pool and thresholds
-    /// @dev Must be called before the protected pool is initialized
+    /// @notice Register a protected pool with a single reference pool (backwards compatible)
     function registerPool(
         PoolKey calldata protectedPoolKey,
         PoolId referencePoolId,
@@ -85,19 +134,51 @@ contract CrossPoolOracleHook is BaseHook {
         uint256 highImpactThresholdBps,
         uint256 circuitBreakerBps
     ) external {
+        PoolId[] memory refs = new PoolId[](1);
+        refs[0] = referencePoolId;
+        bool[] memory dirs = new bool[](1);
+        dirs[0] = referenceZeroForOne;
+
+        _registerPool(protectedPoolKey, refs, dirs, baseFee, highImpactFee, highImpactThresholdBps, circuitBreakerBps);
+    }
+
+    /// @notice Register a protected pool with multiple reference pools
+    function registerPoolMultiRef(
+        PoolKey calldata protectedPoolKey,
+        PoolId[] calldata referencePoolIds,
+        bool[] calldata referenceZeroForOne,
+        uint24 baseFee,
+        uint24 highImpactFee,
+        uint256 highImpactThresholdBps,
+        uint256 circuitBreakerBps
+    ) external {
+        _registerPool(protectedPoolKey, referencePoolIds, referenceZeroForOne, baseFee, highImpactFee, highImpactThresholdBps, circuitBreakerBps);
+    }
+
+    function _registerPool(
+        PoolKey calldata protectedPoolKey,
+        PoolId[] memory referencePoolIds,
+        bool[] memory referenceZeroForOne,
+        uint24 baseFee,
+        uint24 highImpactFee,
+        uint256 highImpactThresholdBps,
+        uint256 circuitBreakerBps
+    ) internal {
         if (msg.sender != owner) revert OnlyOwner();
+        if (referencePoolIds.length == 0) revert EmptyReferences();
+        if (referencePoolIds.length > MAX_REFERENCES) revert TooManyReferences();
+        require(referencePoolIds.length == referenceZeroForOne.length, "Array length mismatch");
 
         PoolId protectedPoolId = protectedPoolKey.toId();
-        poolConfigs[protectedPoolId] = PoolConfig({
-            referencePoolId: referencePoolId,
-            referenceZeroForOne: referenceZeroForOne,
-            baseFee: baseFee,
-            highImpactFee: highImpactFee,
-            highImpactThresholdBps: highImpactThresholdBps,
-            circuitBreakerBps: circuitBreakerBps
-        });
+        PoolConfig storage config = _poolConfigs[protectedPoolId];
+        config.referencePoolIds = referencePoolIds;
+        config.referenceZeroForOne = referenceZeroForOne;
+        config.baseFee = baseFee;
+        config.highImpactFee = highImpactFee;
+        config.highImpactThresholdBps = highImpactThresholdBps;
+        config.circuitBreakerBps = circuitBreakerBps;
 
-        emit PoolRegistered(protectedPoolId, referencePoolId, poolConfigs[protectedPoolId]);
+        emit PoolRegistered(protectedPoolId, referencePoolIds.length);
     }
 
     // ============ Hook Callbacks ============
@@ -108,11 +189,16 @@ contract CrossPoolOracleHook is BaseHook {
         returns (bytes4)
     {
         PoolId poolId = key.toId();
-        PoolConfig storage config = poolConfigs[poolId];
+        PoolConfig storage config = _poolConfigs[poolId];
 
-        // Store the initial reference price
-        if (PoolId.unwrap(config.referencePoolId) != bytes32(0)) {
-            (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolId);
+        // Store initial reference prices
+        for (uint256 i = 0; i < config.referencePoolIds.length; i++) {
+            (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolIds[i]);
+            lastReferenceSqrtPrices[poolId][i] = refSqrtPrice;
+        }
+        // Also set legacy single-reference field
+        if (config.referencePoolIds.length > 0) {
+            (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolIds[0]);
             lastReferenceSqrtPrice[poolId] = refSqrtPrice;
         }
 
@@ -125,41 +211,45 @@ contract CrossPoolOracleHook is BaseHook {
         returns (bytes4, BeforeSwapDelta, uint24)
     {
         PoolId poolId = key.toId();
-        PoolConfig storage config = poolConfigs[poolId];
+        PoolConfig storage config = _poolConfigs[poolId];
 
-        if (PoolId.unwrap(config.referencePoolId) == bytes32(0)) {
+        if (config.referencePoolIds.length == 0) {
             revert PoolNotRegistered();
         }
 
-        // Read current reference pool price (cross-pool read — the key innovation)
-        (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolId);
+        // Find the maximum reference price change across all reference pools
+        // This is the most generous interpretation: if ANY reference moved,
+        // we credit that movement as "explained"
+        uint256 maxRefPriceChangeBps = 0;
+        for (uint256 i = 0; i < config.referencePoolIds.length; i++) {
+            (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolIds[i]);
+            uint256 changeBps = _calculatePriceChangeBps(
+                lastReferenceSqrtPrices[poolId][i], refSqrtPrice
+            );
+            if (changeBps > maxRefPriceChangeBps) {
+                maxRefPriceChangeBps = changeBps;
+            }
+        }
 
         // Read current protected pool price
         (uint160 protectedSqrtPrice,,,) = poolManager.getSlot0(poolId);
 
-        // Calculate how much the reference price has moved since we last checked
-        uint256 refPriceChangeBps = _calculatePriceChangeBps(
-            lastReferenceSqrtPrice[poolId], refSqrtPrice
-        );
-
-        // Calculate the expected price impact of this swap on the protected pool
+        // Calculate the expected price impact of this swap
         uint256 swapImpactBps = _estimateSwapImpactBps(params, protectedSqrtPrice, key);
 
-        // Determine the "unexplained" price impact:
-        // If the reference asset moved 5% and the protected pool moves 7%,
-        // only 2% is unexplained (potentially manipulation)
+        // Unexplained impact = swap impact minus the maximum reference movement
         uint256 unexplainedImpactBps;
-        if (swapImpactBps > refPriceChangeBps) {
-            unexplainedImpactBps = swapImpactBps - refPriceChangeBps;
+        if (swapImpactBps > maxRefPriceChangeBps) {
+            unexplainedImpactBps = swapImpactBps - maxRefPriceChangeBps;
         }
 
-        // Circuit breaker: block swaps with extreme unexplained impact
+        // Circuit breaker
         if (unexplainedImpactBps >= config.circuitBreakerBps) {
-            emit CircuitBreakerHit(poolId, unexplainedImpactBps, refSqrtPrice);
+            emit CircuitBreakerHit(poolId, unexplainedImpactBps, maxRefPriceChangeBps);
             revert CircuitBreakerTriggered(unexplainedImpactBps);
         }
 
-        // Dynamic fee: elevated fee for high unexplained impact
+        // Dynamic fee
         uint24 fee;
         if (unexplainedImpactBps >= config.highImpactThresholdBps) {
             fee = config.highImpactFee;
@@ -169,7 +259,6 @@ contract CrossPoolOracleHook is BaseHook {
 
         emit DynamicFeeApplied(poolId, fee, unexplainedImpactBps);
 
-        // Return the fee override (requires DYNAMIC_FEE_FLAG on the pool)
         return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, fee | LPFeeLibrary.OVERRIDE_FEE_FLAG);
     }
 
@@ -179,11 +268,16 @@ contract CrossPoolOracleHook is BaseHook {
         returns (bytes4, int128)
     {
         PoolId poolId = key.toId();
-        PoolConfig storage config = poolConfigs[poolId];
+        PoolConfig storage config = _poolConfigs[poolId];
 
-        // Update reference price tracking for next swap comparison
-        if (PoolId.unwrap(config.referencePoolId) != bytes32(0)) {
-            (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolId);
+        // Update all reference prices
+        for (uint256 i = 0; i < config.referencePoolIds.length; i++) {
+            (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolIds[i]);
+            lastReferenceSqrtPrices[poolId][i] = refSqrtPrice;
+        }
+        // Update legacy field
+        if (config.referencePoolIds.length > 0) {
+            (uint160 refSqrtPrice,,,) = poolManager.getSlot0(config.referencePoolIds[0]);
             lastReferenceSqrtPrice[poolId] = refSqrtPrice;
         }
 
@@ -193,8 +287,6 @@ contract CrossPoolOracleHook is BaseHook {
     // ============ Internal Price Math ============
 
     /// @notice Calculate basis points change between two sqrtPriceX96 values
-    /// @dev sqrtPrice is sqrt(price) * 2^96. Price = (sqrtPrice / 2^96)^2
-    ///      We compare prices by comparing sqrtPrice^2 values to avoid overflow
     function _calculatePriceChangeBps(uint160 oldSqrtPrice, uint160 newSqrtPrice)
         internal
         pure
@@ -202,15 +294,9 @@ contract CrossPoolOracleHook is BaseHook {
     {
         if (oldSqrtPrice == 0) return 0;
 
-        // Use sqrtPrice ratio to approximate price change
-        // price_ratio = (newSqrt / oldSqrt)^2
-        // We compute |1 - price_ratio| in bps
-        // Simplified: |(newSqrt^2 - oldSqrt^2)| / oldSqrt^2 * 10000
         uint256 oldSq = uint256(oldSqrtPrice);
         uint256 newSq = uint256(newSqrtPrice);
 
-        // Use the sqrt prices directly for a simpler approximation:
-        // price change ≈ 2 * |sqrtPrice change| / sqrtPrice (for small changes)
         uint256 diff;
         if (newSq > oldSq) {
             diff = newSq - oldSq;
@@ -218,24 +304,20 @@ contract CrossPoolOracleHook is BaseHook {
             diff = oldSq - newSq;
         }
 
-        // 2 * diff / oldSq * 10000 (in bps, factor of 2 because sqrt)
         return (2 * diff * 10000) / oldSq;
     }
 
     /// @notice Estimate the price impact of a swap in basis points
-    /// @dev Uses a simplified model: impact ≈ amountIn / poolLiquidity
-    ///      For a more accurate estimate, we'd need to walk the tick bitmap
+    /// @dev Uses sqrtPrice-based math for accurate estimation.
     function _estimateSwapImpactBps(
         SwapParams calldata params,
-        uint160,
+        uint160 currentSqrtPrice,
         PoolKey calldata key
     ) internal view returns (uint256) {
-        // Get pool liquidity at current tick
         uint128 liquidity = poolManager.getLiquidity(key.toId());
 
-        if (liquidity == 0) return 10000; // Max impact for empty pool
+        if (liquidity == 0 || currentSqrtPrice == 0) return 10000;
 
-        // amountSpecified is negative for exactInput, positive for exactOutput
         uint256 absAmount;
         if (params.amountSpecified < 0) {
             absAmount = uint256(-params.amountSpecified);
@@ -243,13 +325,27 @@ contract CrossPoolOracleHook is BaseHook {
             absAmount = uint256(params.amountSpecified);
         }
 
-        // Simplified impact: amount / liquidity * 10000 bps
-        // This is a rough estimate — real impact depends on tick concentration
-        // For concentrated liquidity, this underestimates impact of large trades
-        // and overestimates impact of small trades, which is acceptable
-        // (we err on the side of caution for large trades)
-        if (absAmount >= liquidity) return 10000;
+        uint256 L = uint256(liquidity);
+        uint256 sqrtP = uint256(currentSqrtPrice);
+        uint256 newSqrtP;
 
-        return (absAmount * 10000) / uint256(liquidity);
+        if (params.zeroForOne) {
+            if (absAmount >= L) return 10000;
+            newSqrtP = (sqrtP * L) / (L + absAmount);
+        } else {
+            uint256 delta = (absAmount << 96) / L;
+            newSqrtP = sqrtP + delta;
+        }
+
+        uint256 diff;
+        if (newSqrtP > sqrtP) {
+            diff = newSqrtP - sqrtP;
+        } else {
+            diff = sqrtP - newSqrtP;
+        }
+
+        uint256 impactBps = (2 * diff * 10000) / sqrtP;
+        if (impactBps > 10000) return 10000;
+        return impactBps;
     }
 }
