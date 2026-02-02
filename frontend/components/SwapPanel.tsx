@@ -1,11 +1,12 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useMemo } from "react";
 import {
   useAccount,
   useWriteContract,
   useWaitForTransactionReceipt,
   useReadContract,
+  useSimulateContract,
 } from "wagmi";
 import { parseEther } from "viem";
 import {
@@ -51,6 +52,46 @@ export function SwapPanel() {
   const inputToken = zeroForOne ? "NEW" : "WETH";
   const outputToken = zeroForOne ? "WETH" : "NEW";
 
+  const amountIn = useMemo(() => {
+    try {
+      return parseEther(amount || "0");
+    } catch {
+      return 0n;
+    }
+  }, [amount]);
+
+  const deadline = useMemo(
+    () => BigInt(Math.floor(Date.now() / 1000) + 3600),
+    []
+  );
+
+  // Simulate the swap to detect circuit breaker before sending
+  const { error: simulationError } = useSimulateContract({
+    address: ADDRESSES.swapRouter,
+    abi: swapRouterAbi,
+    functionName: "swapExactTokensForTokens",
+    args: [
+      amountIn,
+      0n,
+      zeroForOne,
+      {
+        currency0: PROTECTED_POOL_KEY.currency0,
+        currency1: PROTECTED_POOL_KEY.currency1,
+        fee: PROTECTED_POOL_KEY.fee,
+        tickSpacing: PROTECTED_POOL_KEY.tickSpacing,
+        hooks: PROTECTED_POOL_KEY.hooks,
+      },
+      "0x" as `0x${string}`,
+      address ?? "0x0000000000000000000000000000000000000000",
+      deadline,
+    ],
+    account: address,
+    query: { enabled: !!address && amountIn > 0n },
+  });
+
+  const isCircuitBreaker =
+    simulationError?.message?.includes("CircuitBreakerTriggered") ?? false;
+
   function handleApprove() {
     const token = zeroForOne ? ADDRESSES.newtoken : ADDRESSES.weth;
     approve.writeContract({
@@ -77,9 +118,7 @@ export function SwapPanel() {
   }
 
   function handleSwap() {
-    if (!address) return;
-    const amountIn = parseEther(amount);
-    const deadline = BigInt(Math.floor(Date.now() / 1000) + 3600);
+    if (!address || isCircuitBreaker) return;
 
     swap.writeContract({
       address: ADDRESSES.swapRouter,
@@ -186,6 +225,14 @@ export function SwapPanel() {
           </p>
         </div>
 
+        {/* Circuit breaker warning from simulation */}
+        {isCircuitBreaker && (
+          <div className="bg-red-900/40 border border-red-600/50 rounded p-3 text-sm text-red-300">
+            Circuit breaker triggered — this swap would be blocked by the hook.
+            Reduce the amount or wait for reference pool movement.
+          </div>
+        )}
+
         {/* Action buttons */}
         <div className="flex gap-2">
           <button
@@ -193,29 +240,45 @@ export function SwapPanel() {
             disabled={approve.isPending}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
           >
-            {approve.isPending ? "..." : approve.isSuccess ? "1. Approved" : "1. Approve"}
+            {approve.isPending
+              ? "..."
+              : approve.isSuccess
+              ? "1. Approved"
+              : "1. Approve"}
           </button>
           <button
             onClick={handlePermit2Approve}
             disabled={permit2.isPending}
             className="px-3 py-2 bg-gray-700 hover:bg-gray-600 rounded text-sm disabled:opacity-50"
           >
-            {permit2.isPending ? "..." : permit2.isSuccess ? "2. Done" : "2. Permit"}
+            {permit2.isPending
+              ? "..."
+              : permit2.isSuccess
+              ? "2. Done"
+              : "2. Permit"}
           </button>
           <button
             onClick={handleSwap}
-            disabled={swap.isPending}
-            className="flex-1 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 rounded text-sm font-semibold disabled:opacity-50"
+            disabled={swap.isPending || isCircuitBreaker}
+            className={`flex-1 px-3 py-2 rounded text-sm font-semibold disabled:opacity-50 ${
+              isCircuitBreaker
+                ? "bg-red-800 cursor-not-allowed"
+                : "bg-indigo-600 hover:bg-indigo-500"
+            }`}
           >
             {swap.isPending
               ? "Confirming..."
+              : isCircuitBreaker
+              ? "BLOCKED"
               : `3. Swap ${inputToken} -> ${outputToken}`}
           </button>
         </div>
 
         {/* Status */}
         {isSwapConfirming && (
-          <p className="text-sm text-yellow-400">Waiting for confirmation...</p>
+          <p className="text-sm text-yellow-400">
+            Waiting for confirmation...
+          </p>
         )}
         {isSwapSuccess && (
           <p className="text-sm text-green-400">Swap confirmed!</p>
