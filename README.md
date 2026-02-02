@@ -8,20 +8,28 @@ New tokens launching on Uniswap have thin liquidity pools that are easy to manip
 
 ## Solution
 
-CrossPoolOracleHook reads a reference pool's price (e.g. ETH/USDC with deep liquidity) directly from Uniswap v4's singleton PoolManager during every swap on the protected pool. By comparing the reference pool's price movement against the protected pool's swap impact, the hook distinguishes legitimate market movements from manipulation attempts.
+CrossPoolOracleHook reads reference pools' prices (e.g. ETH/USDC, ETH/DAI with deep liquidity) directly from Uniswap v4's singleton PoolManager during every swap on the protected pool. By comparing the maximum reference price movement against the protected pool's swap impact, the hook distinguishes legitimate market movements from manipulation attempts.
 
-**No external oracle needed** — one Uniswap pool acts as the oracle for another.
+**No external oracle needed** — Uniswap pools act as oracles for each other.
 
 This is only possible with Uniswap v4's singleton architecture, where all pools share one contract and hooks can read any pool's state in the same transaction.
+
+### Key Features
+
+- **Cross-pool state reads** — reads any pool's price via `getSlot0` in the same tx
+- **Multi-reference pools** — up to 5 reference pools per protected pool for robustness
+- **Dynamic fees** — base fee for normal swaps, elevated fee for suspicious ones
+- **Circuit breaker** — blocks swaps with extreme unexplained price impact
+- **sqrtPrice-based impact estimation** — uses actual AMM math, not linear approximation
 
 ## How It Works
 
 On every swap in the protected pool, the hook:
 
-1. Reads the reference pool's current price (cross-pool state read via `getSlot0`)
-2. Calculates how much the reference price moved since the last swap
-3. Estimates the current swap's price impact
-4. Computes **unexplained impact** = swap impact - reference movement
+1. Reads all reference pools' current prices (cross-pool state reads via `getSlot0`)
+2. Calculates the maximum price movement across all references since the last swap
+3. Estimates the current swap's price impact using sqrtPrice-based AMM math
+4. Computes **unexplained impact** = swap impact - max reference movement
 5. Applies tiered response:
    - **Normal**: unexplained impact < 2% → base fee (0.3%)
    - **Elevated**: unexplained impact 2-10% → high fee (1%)
@@ -47,7 +55,7 @@ forge install
 # Build
 forge build
 
-# Run tests (5 tests covering all scenarios)
+# Run tests (6 hook tests + 6 helper tests)
 forge test
 
 # Deploy to Sepolia
@@ -57,15 +65,34 @@ forge script script/DeployCrossPoolOracle.s.sol:DeployCrossPoolOracle \
 # Run demo swaps
 forge script script/DemoSwaps.s.sol:DemoSwaps \
   --rpc-url <RPC_URL> --private-key <KEY> --broadcast -v
+
+# Frontend
+cd frontend && npm install && npm run dev
 ```
 
 ## Configuration
 
-Each protected pool is registered with:
+### Single reference pool
+
+```solidity
+hook.registerPool(protectedPoolKey, referencePoolId, true, 3000, 10000, 200, 1000);
+```
+
+### Multiple reference pools
+
+```solidity
+PoolId[] memory refs = new PoolId[](2);
+refs[0] = ethUsdcPoolId;
+refs[1] = ethDaiPoolId;
+bool[] memory dirs = new bool[](2);
+dirs[0] = true;
+dirs[1] = true;
+hook.registerPoolMultiRef(protectedPoolKey, refs, dirs, 3000, 10000, 200, 1000);
+```
 
 | Parameter | Example | Description |
 |-----------|---------|-------------|
-| `referencePoolId` | ETH/USDC pool | Deep liquidity pool to read price from |
+| `referencePoolIds` | ETH/USDC, ETH/DAI | Deep liquidity pools to read price from (max 5) |
 | `baseFee` | 3000 (0.3%) | Normal swap fee |
 | `highImpactFee` | 10000 (1%) | Fee when unexplained impact is elevated |
 | `highImpactThresholdBps` | 200 (2%) | Threshold for elevated fee |
@@ -73,10 +100,18 @@ Each protected pool is registered with:
 
 ## Deployed on Sepolia
 
-Contract addresses in [`deployments/sepolia.json`](deployments/sepolia.json).
+| Contract | Address |
+|----------|---------|
+| Hook | [`0x4112Af357570ADc7C6D35801Af1d64eEb57e90c0`](https://sepolia.etherscan.io/address/0x4112Af357570ADc7C6D35801Af1d64eEb57e90c0) |
+| WETH (test) | [`0xB33638d05b9A69bb1731027d3F3561Cc03aD2c74`](https://sepolia.etherscan.io/address/0xB33638d05b9A69bb1731027d3F3561Cc03aD2c74) |
+| USDC (test) | [`0x75EaaB39eB72db66372852e1beeFebA2dE5FE7f5`](https://sepolia.etherscan.io/address/0x75EaaB39eB72db66372852e1beeFebA2dE5FE7f5) |
+| NEWTOKEN (test) | [`0xF4EB0d2406aD8897c0350b7be2551663a765c234`](https://sepolia.etherscan.io/address/0xF4EB0d2406aD8897c0350b7be2551663a765c234) |
+
+Full addresses and infrastructure in [`deployments/sepolia.json`](deployments/sepolia.json).
 
 ## Built With
 
 - [Uniswap v4](https://github.com/Uniswap/v4-core) — Singleton pool architecture with hooks
 - [OpenZeppelin Uniswap Hooks](https://github.com/openzeppelin/uniswap-hooks) — BaseHook framework
 - [Foundry](https://github.com/foundry-rs/foundry) — Solidity development toolchain
+- [Next.js](https://nextjs.org/) + [wagmi](https://wagmi.sh/) — Frontend
