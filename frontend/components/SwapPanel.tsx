@@ -100,6 +100,7 @@ export function SwapPanel() {
         address,
         deadline,
       ],
+      gas: 500000n,
     });
   }
 
