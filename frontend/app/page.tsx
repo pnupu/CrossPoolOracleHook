@@ -2,6 +2,7 @@ import { PoolCard } from "@/components/PoolCard";
 import { SwapPanel } from "@/components/SwapPanel";
 import { EventLog } from "@/components/EventLog";
 import { ConnectButton } from "@/components/ConnectButton";
+import { EnsPanel } from "@/components/EnsPanel";
 import { REFERENCE_POOL_ID, PROTECTED_POOL_ID } from "@/lib/contracts";
 
 export default function Home() {
@@ -29,6 +30,20 @@ export default function Home() {
           swap is blocked entirely. No external oracle needed.
         </p>
       </div>
+
+      {/* Demo guide */}
+      <div className="mb-8 rounded-xl border border-gray-700/50 bg-gray-900/50 p-5">
+        <h2 className="text-sm font-semibold text-gray-300 mb-2">
+          Demo Guide
+        </h2>
+        <p className="text-sm text-gray-400 leading-relaxed">
+          Try a small swap (base fee), then a larger swap (elevated fee), and
+          finally a large swap after moving the reference pool. The Event Log
+          shows when dynamic fees or the circuit breaker are applied.
+        </p>
+      </div>
+
+      <EnsPanel />
 
       {/* Pool cards */}
       <div className="grid md:grid-cols-2 gap-4 mb-6">

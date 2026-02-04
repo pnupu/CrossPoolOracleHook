@@ -48,19 +48,19 @@ contract DemoSwaps is Script {
         // Approve tokens to router via Permit2
         _approveAll();
 
-        console.log("=== DEMO 1: Normal small swap (expect base 0.3% fee) ===");
-        _doSwap(protKey, 0.01e18, "Small swap");
+        console.log("=== DEMO 1: Normal small swap (expect base fee) ===");
+        _doSwap(protKey, 0.01e18, "Small swap on protected pool");
 
         console.log("");
-        console.log("=== DEMO 2: Larger swap (expect elevated 1% fee) ===");
-        _doSwap(protKey, 0.5e18, "Large swap");
+        console.log("=== DEMO 2: Larger swap (expect elevated fee) ===");
+        _doSwap(protKey, 0.45e18, "Large swap on protected pool");
 
         console.log("");
         console.log("=== DEMO 3: Reference pool movement, then protected swap ===");
         console.log("Moving reference pool price (big WETH/USDC swap)...");
         _doSwap(refKey, 50e18, "Reference pool swap");
         console.log("Now swapping on protected pool (should succeed - movement is explained)...");
-        _doSwap(protKey, 0.5e18, "Protected swap after ref move");
+        _doSwap(protKey, 0.45e18, "Protected swap after ref move");
 
         vm.stopBroadcast();
 
@@ -109,12 +109,14 @@ contract DemoSwaps is Script {
 
         int256 spent = delta.amount0();
         int256 received = delta.amount1();
+        uint256 priceMoveBps = _calculatePriceChangeBps(sqrtPriceBefore, sqrtPriceAfter);
 
         console.log(label);
         console.log("  In: ", uint256(-spent));
         console.log("  Out:", uint256(received));
         console.log("  Price before (sqrtX96):", uint256(sqrtPriceBefore));
         console.log("  Price after  (sqrtX96):", uint256(sqrtPriceAfter));
+        console.log("  Price move (bps):", priceMoveBps);
     }
 
     function _approveAll() internal {
@@ -137,5 +139,25 @@ contract DemoSwaps is Script {
     function _sort(address a, address b) internal pure returns (Currency, Currency) {
         if (a < b) return (Currency.wrap(a), Currency.wrap(b));
         return (Currency.wrap(b), Currency.wrap(a));
+    }
+
+    function _calculatePriceChangeBps(uint160 oldSqrtPrice, uint160 newSqrtPrice)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (oldSqrtPrice == 0) return 0;
+
+        uint256 oldSq = uint256(oldSqrtPrice);
+        uint256 newSq = uint256(newSqrtPrice);
+
+        uint256 diff;
+        if (newSq > oldSq) {
+            diff = newSq - oldSq;
+        } else {
+            diff = oldSq - newSq;
+        }
+
+        return (2 * diff * 10000) / oldSq;
     }
 }

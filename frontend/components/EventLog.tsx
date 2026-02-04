@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { usePublicClient } from "wagmi";
+import { mainnet } from "wagmi/chains";
 import { parseAbiItem } from "viem";
 import { ADDRESSES, PROTECTED_POOL_ID } from "@/lib/contracts";
 import { bpsToPercent, feeToPercent } from "@/lib/utils";
@@ -11,8 +12,10 @@ interface LogEntry {
   type: "fee" | "breaker";
   fee?: number;
   impactBps: bigint;
+  refMoveBps?: bigint;
   txHash: string;
   blockNumber: bigint;
+  sender?: `0x${string}`;
 }
 
 const feeEvent = parseAbiItem(
@@ -24,7 +27,9 @@ const breakerEvent = parseAbiItem(
 
 export function EventLog() {
   const [logs, setLogs] = useState<LogEntry[]>([]);
+  const [ensByAddress, setEnsByAddress] = useState<Record<string, string>>({});
   const client = usePublicClient();
+  const ensClient = usePublicClient({ chainId: mainnet.id });
 
   useEffect(() => {
     if (!client) return;
@@ -71,13 +76,67 @@ export function EventLog() {
             id: `${log.transactionHash}-${log.logIndex}`,
             type: "breaker" as const,
             impactBps: log.args.impactBps ?? 0n,
+            refMoveBps: log.args.refPriceChangeBps ?? 0n,
             txHash: log.transactionHash,
             blockNumber: log.blockNumber,
           })),
         ];
 
         entries.sort((a, b) => Number(b.blockNumber - a.blockNumber));
-        setLogs(entries.slice(0, 50));
+        const sliced = entries.slice(0, 50);
+
+        // Fetch senders for unique transactions
+        const uniqueTx = Array.from(new Set(sliced.map((entry) => entry.txHash)));
+        const txs = await Promise.all(
+          uniqueTx.map((hash) =>
+            client
+              .getTransaction({ hash })
+              .then((tx) => ({ hash, from: tx.from }))
+              .catch(() => ({ hash, from: undefined }))
+          )
+        );
+
+        const senderByTx: Record<string, `0x${string}`> = {};
+        const senders = new Set<string>();
+        for (const tx of txs) {
+          if (tx.from) {
+            senderByTx[tx.hash] = tx.from;
+            senders.add(tx.from.toLowerCase());
+          }
+        }
+
+        const withSenders = sliced.map((entry) => ({
+          ...entry,
+          sender: senderByTx[entry.txHash],
+        }));
+
+        // Resolve ENS names on mainnet
+        if (ensClient) {
+          const missing = Array.from(senders).filter(
+            (addr) => !ensByAddress[addr]
+          );
+          if (missing.length > 0) {
+            const resolved = await Promise.all(
+              missing.map((addr) =>
+                ensClient
+                  .getEnsName({ address: addr as `0x${string}` })
+                  .then((name) => ({ addr, name }))
+                  .catch(() => ({ addr, name: null }))
+              )
+            );
+            if (!cancelled) {
+              setEnsByAddress((prev) => {
+                const next = { ...prev };
+                for (const item of resolved) {
+                  if (item.name) next[item.addr] = item.name;
+                }
+                return next;
+              });
+            }
+          }
+        }
+
+        setLogs(withSenders);
       } catch {
         // RPC may not support large ranges; silently ignore
       }
@@ -90,7 +149,7 @@ export function EventLog() {
       cancelled = true;
       clearInterval(interval);
     };
-  }, [client]);
+  }, [client, ensClient, ensByAddress]);
 
   return (
     <div className="rounded-xl border border-gray-700 p-6">
@@ -126,6 +185,19 @@ export function EventLog() {
                   CIRCUIT BREAKER | Impact:{" "}
                   <span className="font-mono">
                     {bpsToPercent(log.impactBps)}
+                  </span>
+                  {" "} | Ref move:{" "}
+                  <span className="font-mono">
+                    {bpsToPercent(log.refMoveBps ?? 0n)}
+                  </span>
+                </span>
+              )}
+              {log.sender && (
+                <span className="ml-2 text-xs text-gray-500">
+                  Sender:{" "}
+                  <span className="font-mono">
+                    {ensByAddress[log.sender.toLowerCase()] ??
+                      `${log.sender.slice(0, 6)}…${log.sender.slice(-4)}`}
                   </span>
                 </span>
               )}

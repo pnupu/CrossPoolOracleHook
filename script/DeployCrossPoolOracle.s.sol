@@ -68,7 +68,7 @@ contract DeployCrossPoolOracle is Script {
         (Currency protC0, Currency protC1) = _sortCurrencies(address(newtoken), address(weth));
         PoolKey memory protKey = PoolKey(protC0, protC1, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
 
-        hook.registerPool(protKey, refKey.toId(), true, 3000, 10000, 200, 1000);
+        hook.registerPool(protKey, refKey.toId(), true, 3000, 10000, 200, 1000, 10000, 1);
         _createPoolWithLiquidity(protKey, 10e18);
         console.log("Protected pool created");
 

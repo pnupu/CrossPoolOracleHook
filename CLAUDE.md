@@ -27,15 +27,16 @@ cd frontend && bun dev                                  # Run frontend locally
 
 Hook permissions: `afterInitialize`, `beforeSwap`, `afterSwap`
 
-The hook reads reference pools' `sqrtPriceX96` via `StateLibrary.getSlot0()` during `beforeSwap`. It compares the maximum reference price movement against the protected pool's swap impact to distinguish legitimate market movement from manipulation.
+The hook reads reference pools' `sqrtPriceX96` via `StateLibrary.getSlot0()` during `beforeSwap`. It compares direction-aligned reference movement (median or max, configurable) against the protected pool's swap impact to distinguish legitimate market movement from manipulation.
 
-**Multi-reference support**: Up to 5 reference pools per protected pool. The hook takes the maximum price movement across all references (most generous to the trader). If ANY reference pool moved, that movement is credited as "explained."
+**Multi-reference support**: Up to 5 reference pools per protected pool. Only reference movement aligned with the swap direction is counted, and aggregation can be median (recommended) or max.
 
 **Decision logic in `beforeSwap`:**
 1. Read all reference pools' prices (cross-pool state reads)
-2. Calculate max reference price movement since last swap
-3. Estimate the current swap's price impact using sqrtPrice-based AMM math
-4. Compute "unexplained impact" = swap impact - max reference movement
+2. Calculate direction-aligned reference price movement since last swap
+3. Aggregate aligned movement (median or max)
+4. Estimate the current swap's price impact using sqrtPrice-based AMM math
+5. Compute "unexplained impact" = swap impact - reference movement
 5. If unexplained impact >= `circuitBreakerBps` → revert (block the swap)
 6. If unexplained impact >= `highImpactThresholdBps` → return elevated fee
 7. Otherwise → return base fee
@@ -57,6 +58,8 @@ The hook owner calls `registerPool()` (single ref) or `registerPoolMultiRef()` (
 - `highImpactFee`: Elevated fee (e.g. 10000 = 1%)
 - `highImpactThresholdBps`: Unexplained impact that triggers elevated fee (e.g. 200 = 2%)
 - `circuitBreakerBps`: Unexplained impact that blocks the swap (e.g. 1000 = 10%)
+- `maxRefMoveBps`: Optional cap on reference contribution (0 = uncapped)
+- `aggregationMode`: 0 = max, 1 = median
 
 ### File Structure
 

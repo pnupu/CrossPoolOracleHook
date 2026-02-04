@@ -26,6 +26,7 @@ import {
   estimateSwapImpactBps,
   predictFeeTier,
   bpsToPercent,
+  feeToPercent,
 } from "@/lib/utils";
 
 export function SwapPanel() {
@@ -137,7 +138,16 @@ export function SwapPanel() {
     const liquidity = BigInt(liqData) & ((1n << 128n) - 1n); // lower 128 bits
     const highImpactThresholdBps = Number(configData[4]);
     const circuitBreakerBps = Number(configData[5]);
-    return { sqrtPriceX96, liquidity, highImpactThresholdBps, circuitBreakerBps };
+    const baseFee = Number(configData[2]);
+    const highImpactFee = Number(configData[3]);
+    return {
+      sqrtPriceX96,
+      liquidity,
+      highImpactThresholdBps,
+      circuitBreakerBps,
+      baseFee,
+      highImpactFee,
+    };
   }, [slot0Data, liqData, configData]);
 
   const impactEstimate = useMemo(() => {
@@ -347,8 +357,8 @@ export function SwapPanel() {
                 {impactEstimate.tier === "blocked"
                   ? "BLOCKED (circuit breaker)"
                   : impactEstimate.tier === "elevated"
-                  ? "1.00% (elevated)"
-                  : "0.30% (base)"}
+                  ? `${feeToPercent(poolState.highImpactFee)} (elevated)`
+                  : `${feeToPercent(poolState.baseFee)} (base)`}
               </span>
             </div>
             <div className="text-xs text-gray-500 mt-1">

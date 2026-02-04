@@ -96,7 +96,9 @@ contract CrossPoolOracleHookTest is BaseTest {
             3000,      // baseFee: 0.3%
             10000,     // highImpactFee: 1%
             200,       // highImpactThresholdBps: 2%
-            1000       // circuitBreakerBps: 10%
+            1000,      // circuitBreakerBps: 10%
+            10000,     // maxRefMoveBps: 100% (uncapped for tests)
+            1          // aggregationMode: median
         );
 
         protectedPoolKey = PoolKey(newtoken, weth, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook));
@@ -136,7 +138,7 @@ contract CrossPoolOracleHookTest is BaseTest {
         // Large swap relative to pool liquidity — high price impact
         // Should trigger elevated fee (1%) but not circuit breaker
         uint256 smallAmount = 0.01e18;
-        uint256 largeAmount = 0.5e18; // Large relative to 10e18 liquidity
+        uint256 largeAmount = 0.45e18; // Large relative to 10e18 liquidity
 
         // Do a small swap first to establish baseline output
         BalanceDelta smallDelta = swapRouter.swapExactTokensForTokens({
@@ -233,7 +235,7 @@ contract CrossPoolOracleHookTest is BaseTest {
 
     // ============ Test: Cross-pool price read works ============
 
-    function test_CrossPoolPriceRead() public {
+    function test_CrossPoolPriceRead() public view {
         // Verify the hook correctly reads the reference pool price
         (uint160 refSqrtPrice,,,) = poolManager.getSlot0(referencePoolId);
         assertTrue(refSqrtPrice > 0, "Reference pool should have a valid price");
@@ -244,7 +246,7 @@ contract CrossPoolOracleHookTest is BaseTest {
 
     // ============ Test: Multi-reference pool support ============
 
-    function test_MultiReference_MaxMovementUsed() public {
+    function test_MultiReference_MedianAlignedMovementUsed() public {
         // Create a second reference pool (USDC/NEWTOKEN) with deep liquidity
         // We reuse existing tokens; just need a new pool with no hook
         Currency ref2C0;
@@ -280,7 +282,7 @@ contract CrossPoolOracleHookTest is BaseTest {
         dirs[1] = true;
 
         PoolKey memory multiProtKey = PoolKey(newtoken, weth, LPFeeLibrary.DYNAMIC_FEE_FLAG, 60, IHooks(hook2));
-        hook2.registerPoolMultiRef(multiProtKey, refs, dirs, 3000, 10000, 200, 1000);
+        hook2.registerPoolMultiRef(multiProtKey, refs, dirs, 3000, 10000, 200, 1000, 10000, 1);
         poolManager.initialize(multiProtKey, Constants.SQRT_PRICE_1_1);
         _addLiquidity(multiProtKey, 10e18);
 
