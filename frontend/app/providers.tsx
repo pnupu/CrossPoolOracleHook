@@ -7,11 +7,17 @@ import { injected } from "wagmi/connectors";
 import { type ReactNode, useState } from "react";
 
 const config = createConfig({
-  chains: [mainnet, sepolia],
+  chains: [sepolia, mainnet],
   connectors: [injected()],
   transports: {
-    [mainnet.id]: http("https://ethereum-rpc.publicnode.com"),
-    [sepolia.id]: http("https://ethereum-sepolia-rpc.publicnode.com"),
+    [mainnet.id]: http(
+      process.env.NEXT_PUBLIC_MAINNET_RPC ||
+        "https://ethereum-rpc.publicnode.com",
+    ),
+    [sepolia.id]: http(
+      process.env.NEXT_PUBLIC_SEPOLIA_RPC ||
+        "https://sepolia.gateway.tenderly.co",
+    ),
   },
 });
 

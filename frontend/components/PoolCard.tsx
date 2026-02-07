@@ -1,6 +1,7 @@
 "use client";
 
 import { useReadContract } from "wagmi";
+import { sepolia } from "wagmi/chains";
 import {
   ADDRESSES,
   poolManagerAbi,
@@ -33,11 +34,12 @@ export function PoolCard({
 }: PoolCardProps) {
   const slot = getSlot0StorageSlot(poolId);
 
-  const { data: slot0Data } = useReadContract({
+  const { data: slot0Data, isError: slot0Error } = useReadContract({
     address: ADDRESSES.poolManager,
     abi: poolManagerAbi,
     functionName: "extsload",
     args: [slot],
+    chainId: sepolia.id,
     query: { refetchInterval: 10000 },
   });
 
@@ -46,6 +48,7 @@ export function PoolCard({
     abi: hookAbi,
     functionName: "poolConfigs",
     args: [poolId],
+    chainId: sepolia.id,
     query: { enabled: isProtected },
   });
 
@@ -54,6 +57,7 @@ export function PoolCard({
     abi: hookAbi,
     functionName: "lastReferenceSqrtPrice",
     args: [poolId],
+    chainId: sepolia.id,
     query: { enabled: isProtected, refetchInterval: 10000 },
   });
 
@@ -92,6 +96,8 @@ export function PoolCard({
             </div>
           </div>
         </div>
+      ) : slot0Error ? (
+        <p className="text-red-400 text-sm">Failed to load pool data. Check RPC connection.</p>
       ) : (
         <p className="text-gray-500">Loading...</p>
       )}

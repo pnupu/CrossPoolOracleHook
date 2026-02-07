@@ -8,6 +8,7 @@ import {
   useReadContract,
   usePublicClient,
 } from "wagmi";
+import { sepolia } from "wagmi/chains";
 import { parseEther } from "viem";
 import {
   ADDRESSES,
@@ -92,6 +93,7 @@ export function SwapPanel() {
     abi: poolManagerAbi,
     functionName: "extsload",
     args: [slot0Slot],
+    chainId: sepolia.id,
     query: { refetchInterval: 10000 },
   });
 
@@ -100,6 +102,7 @@ export function SwapPanel() {
     abi: poolManagerAbi,
     functionName: "extsload",
     args: [liqSlot],
+    chainId: sepolia.id,
     query: { refetchInterval: 10000 },
   });
 
@@ -109,6 +112,7 @@ export function SwapPanel() {
     abi: hookAbi,
     functionName: "poolConfigs",
     args: [PROTECTED_POOL_ID],
+    chainId: sepolia.id,
   });
 
   // Read cached reference price
@@ -117,6 +121,7 @@ export function SwapPanel() {
     abi: hookAbi,
     functionName: "lastReferenceSqrtPrice",
     args: [PROTECTED_POOL_ID],
+    chainId: sepolia.id,
     query: { refetchInterval: 10000 },
   });
 
