@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { usePublicClient } from "wagmi";
 import { mainnet } from "wagmi/chains";
-import { parseAbiItem } from "viem";
+import { parseAbiItem, type Hex } from "viem";
 import { ADDRESSES, PROTECTED_POOL_ID } from "@/lib/contracts";
 import { bpsToPercent, feeToPercent } from "@/lib/utils";
 
@@ -13,9 +13,9 @@ interface LogEntry {
   fee?: number;
   impactBps: bigint;
   refMoveBps?: bigint;
-  txHash: string;
+  txHash: Hex;
   blockNumber: bigint;
-  sender?: `0x${string}`;
+  sender?: Hex;
 }
 
 const feeEvent = parseAbiItem(
@@ -69,7 +69,7 @@ export function EventLog() {
             type: "fee" as const,
             fee: Number(log.args.fee ?? 0),
             impactBps: log.args.impactBps ?? 0n,
-            txHash: log.transactionHash,
+            txHash: log.transactionHash as Hex,
             blockNumber: log.blockNumber,
           })),
           ...breakerLogs.map((log) => ({
@@ -77,7 +77,7 @@ export function EventLog() {
             type: "breaker" as const,
             impactBps: log.args.impactBps ?? 0n,
             refMoveBps: log.args.refPriceChangeBps ?? 0n,
-            txHash: log.transactionHash,
+            txHash: log.transactionHash as Hex,
             blockNumber: log.blockNumber,
           })),
         ];
@@ -90,13 +90,13 @@ export function EventLog() {
         const txs = await Promise.all(
           uniqueTx.map((hash) =>
             client
-              .getTransaction({ hash })
+              .getTransaction({ hash: hash as `0x${string}` })
               .then((tx) => ({ hash, from: tx.from }))
               .catch(() => ({ hash, from: undefined }))
           )
         );
 
-        const senderByTx: Record<string, `0x${string}`> = {};
+        const senderByTx: Record<string, Hex> = {};
         const senders = new Set<string>();
         for (const tx of txs) {
           if (tx.from) {
